@@ -150,6 +150,20 @@ pub struct EconomicEventLedgerEffect {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceObservation {
+    /// Native bounded statement anchor; no raw contents or issuer authentication.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "wallet_anchor"
+    )]
+    pub wallet_balance_anchor: Option<crate::WalletStatementBalanceAnchor>,
+    /// Exact reviewed allocation manifest on native matrix proofs only; no raw source content.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "allocation_review"
+    )]
+    pub allocation_review: Option<crate::EvidenceAllocationReview>,
     /// Kind of fact or data-quality condition observed.
     pub kind: ObservationKind,
     /// Entity or collection to which the observation applies.
@@ -201,6 +215,8 @@ pub enum ObservationKind {
     Reconciliation,
     /// A source-normalized resolution for one stable economic event.
     EconomicEventResolution,
+    /// Human-attested bounded statement balance, scoped to one logical wallet claim.
+    WalletStatementAnchor,
     /// Currency compatibility of the relevant facts.
     CurrencyCompatibility,
 }
@@ -231,4 +247,16 @@ pub enum ObservationState {
     Unreconciled,
     /// The observed currencies are incompatible.
     Incompatible,
+}
+
+fn allocation_review<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::EvidenceAllocationReview>, D::Error> {
+    crate::EvidenceAllocationReview::deserialize(deserializer).map(Some)
+}
+
+fn wallet_anchor<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<crate::WalletStatementBalanceAnchor>, D::Error> {
+    crate::WalletStatementBalanceAnchor::deserialize(d).map(Some)
 }

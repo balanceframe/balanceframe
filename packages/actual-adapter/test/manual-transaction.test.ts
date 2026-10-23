@@ -796,3 +796,615 @@ describe('ActualConnector.createManualTransaction', () => {
     expect(vi.mocked(harness.client.getPayees)).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('explicit evidence credits', () => {
+  it('preserves debit-only manual writes while explicitly creating and replaying a verified positive credit', async () => {
+    const harness = createHarness();
+    await selectTestBudget(harness);
+    const input = singleInput({ amount: 12500 });
+    expectFailure(await createManualTransaction(harness, input), /AMOUNT_OUT_OF_RANGE/);
+    const fence = vi.fn();
+    const result = await harness.connector.createEvidenceCredit(input, {
+      budgetId: BUDGET_ID,
+      assertExecutionCurrent: fence,
+    });
+    expectVerified(result, input);
+    expect(fence).toHaveBeenCalledTimes(1);
+    const replay = await harness.connector.createEvidenceCredit(input, {
+      budgetId: BUDGET_ID,
+      assertExecutionCurrent: fence,
+    });
+    expect(replay).toMatchObject({ success: true, alreadyPresent: true });
+    expect(harness.client.addTransactions).toHaveBeenCalledTimes(1);
+  });
+  it('checks positive split conservation and refuses imported duplicates and observe mode', async () => {
+    const harness = createHarness();
+    await selectTestBudget(harness);
+    const input = singleInput({
+      amount: 12500,
+      categoryId: null,
+      splits: [
+        { amount: 7500, accountId: ACCOUNT_ID, date: '2026-09-25', categoryId: GROCERIES_ID },
+        { amount: 5000, accountId: ACCOUNT_ID, date: '2026-09-25', categoryId: DINING_ID },
+      ],
+    });
+    expectVerified(
+      await harness.connector.createEvidenceCredit(input, {
+        budgetId: BUDGET_ID,
+        assertExecutionCurrent: () => {},
+      }),
+      input,
+    );
+    expectFailure(
+      await harness.connector.createEvidenceCredit(
+        { ...input, parentId: 'invalid', splits: [{ ...input.splits![0]!, amount: -12500 }] },
+        { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+      ),
+      /AMOUNT_OUT_OF_RANGE|SPLIT_CONSERVATION/,
+    );
+    const observe = createHarness({ mode: 'observe' });
+    await selectTestBudget(observe);
+    await expect(
+      observe.connector.createEvidenceCredit(input, {
+        budgetId: BUDGET_ID,
+        assertExecutionCurrent: () => {},
+      }),
+    ).rejects.toThrow(/observe/i);
+  });
+});
+
+describe('single-child evidence split contracts', () => {
+  it('creates one exact credit child without relaxing conservation or debit sign guards', async () => {
+    const harness = createHarness();
+    await selectTestBudget(harness);
+    const transaction = singleInput({
+      amount: 12500,
+      categoryId: null,
+      splits: [
+        { amount: 12500, accountId: ACCOUNT_ID, date: '2026-09-25', categoryId: GROCERIES_ID },
+      ],
+    });
+    expectVerified(
+      await harness.connector.createEvidenceCredit(transaction, {
+        budgetId: BUDGET_ID,
+        assertExecutionCurrent: () => {},
+      }),
+      transaction,
+    );
+    expectFailure(
+      await harness.connector.createEvidenceCredit(
+        {
+          ...transaction,
+          parentId: 'nonconserving',
+          splits: [{ ...transaction.splits![0]!, amount: 12499 }],
+        },
+        { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+      ),
+      /SPLIT_CONSERVATION/,
+    );
+    expectFailure(
+      await harness.connector.createManualTransaction(transaction, {
+        budgetId: BUDGET_ID,
+        assertExecutionCurrent: () => {},
+      }),
+      /AMOUNT_OUT_OF_RANGE/,
+    );
+  });
+  it('refuses SDK-inherited child metadata changes before dispatch', async () => {
+    const child = {
+      id: 'existing-child',
+      account: ACCOUNT_ID,
+      date: '2026-09-25',
+      amount: -12500,
+      category: GROCERIES_ID,
+      parent_id: 'settlement',
+      is_child: true,
+      is_parent: false,
+      cleared: true,
+      reconciled: false,
+      payee: null,
+      starting_balance_flag: null,
+      error: null,
+    } as TransactionEntity;
+    const harness = createHarness({
+      transactions: [
+        importedTransaction('settlement', 'bank-import', {
+          is_parent: true,
+          category: null,
+          payee: 'payee_existing',
+          cleared: true,
+          reconciled: false,
+          starting_balance_flag: null,
+          subtransactions: [child],
+          error: null,
+        }),
+      ],
+    });
+    await selectTestBudget(harness);
+    const expected = await harness.connector.captureEvidenceTransaction({
+      budgetId: BUDGET_ID,
+      accountId: ACCOUNT_ID,
+      transactionId: 'settlement',
+    });
+    const transaction = singleInput({
+      parentId: 'settlement',
+      categoryId: null,
+      payeeName: 'Existing Merchant',
+      splits: [
+        { amount: -12500, accountId: ACCOUNT_ID, date: '2026-09-25', categoryId: DINING_ID },
+      ],
+    });
+    const result = await harness.connector.amendEvidenceTransaction(
+      { expected, transaction },
+      { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+    );
+    expectFailure(result, /INVALID_INPUT/);
+    expect(harness.client.updateTransaction).not.toHaveBeenCalled();
+  });
+  it.each(['existing', 'new'] as const)(
+    'reclassifies a conserving %s one-child settlement with exact metadata and SDK child defaults',
+    async (kind) => {
+      const originalChild = {
+        id: 'existing-child',
+        account: ACCOUNT_ID,
+        date: '2026-09-25',
+        amount: -12500,
+        category: GROCERIES_ID,
+        parent_id: 'settlement',
+        is_child: true,
+        is_parent: false,
+        cleared: true,
+        reconciled: false,
+        notes: 'Original child note',
+        starting_balance_flag: null,
+        sort_order: -1,
+        error: null,
+      } as TransactionEntity;
+      const original = importedTransaction('settlement', 'bank-import', {
+        cleared: true,
+        reconciled: false,
+        notes: 'Original settlement note',
+        starting_balance_flag: null,
+        ...(kind === 'existing'
+          ? { category: null, is_parent: true, subtransactions: [originalChild] }
+          : {}),
+        error: null,
+      });
+      const harness = createHarness({ transactions: [original] });
+      await selectTestBudget(harness);
+      // Installed Actual26.10 makeChild/updateTransaction apply these precise defaults.
+      harness.client.updateTransaction = vi.fn(async (id, fields) => {
+        const children = (fields.subtransactions as Record<string, unknown>[]).map(
+          (child, index) => ({
+            ...child,
+            account: original.account,
+            date: original.date,
+            cleared: original.cleared,
+            reconciled: original.reconciled,
+            starting_balance_flag: original.starting_balance_flag ?? null,
+            sort_order: child.sort_order ?? -(index + 1),
+            is_child: true,
+            parent_id: id,
+            error: null,
+          }),
+        );
+        harness.transactions[0] = {
+          ...harness.transactions[0]!,
+          ...fields,
+          subtransactions: children,
+        } as TransactionEntity;
+        return [id];
+      });
+      const expected = await harness.connector.captureEvidenceTransaction({
+        budgetId: BUDGET_ID,
+        accountId: ACCOUNT_ID,
+        transactionId: 'settlement',
+      });
+      const transaction = singleInput({
+        parentId: 'settlement',
+        categoryId: null,
+        notes: 'Original settlement note',
+        splits: [
+          { amount: -12500, accountId: ACCOUNT_ID, date: original.date, categoryId: DINING_ID },
+        ],
+      });
+      expectVerified(
+        await harness.connector.amendEvidenceTransaction(
+          { expected, transaction },
+          { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+        ),
+        transaction,
+      );
+      expect(harness.transactions[0]).toMatchObject({
+        id: 'settlement',
+        imported_id: 'bank-import',
+        cleared: true,
+        reconciled: false,
+        amount: -12500,
+        notes: 'Original settlement note',
+        is_parent: true,
+      });
+      expect(harness.transactions[0]!.subtransactions).toHaveLength(1);
+      expect(harness.transactions[0]!.subtransactions![0]).toMatchObject({
+        category: DINING_ID,
+        amount: -12500,
+        starting_balance_flag: null,
+        sort_order: -1,
+        ...(kind === 'existing'
+          ? { id: 'existing-child', notes: 'Original child note' }
+          : { notes: null }),
+      });
+      expect(await harness.connector.verifyEvidenceAmendment({ expected, transaction })).toBe(true);
+      expect(harness.client.addTransactions).not.toHaveBeenCalled();
+      const invalid = { ...transaction, splits: [{ ...transaction.splits![0]!, amount: -12499 }] };
+      expectFailure(
+        await harness.connector.amendEvidenceTransaction(
+          { expected, transaction: invalid },
+          { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+        ),
+        /INVALID_INPUT/,
+      );
+      expect(harness.client.updateTransaction).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
+describe('exact evidence settlement amendments', () => {
+  it('pins complete imported metadata and changes only an existing settlement category', async () => {
+    const original = importedTransaction('settlement', 'bank-import', {
+      cleared: true,
+      reconciled: false,
+      notes: 'Original note',
+      payee: 'payee_existing',
+      error: null,
+    });
+    const harness = createHarness({ transactions: [original] });
+    await selectTestBudget(harness);
+    harness.client.updateTransaction = vi.fn(async (id, fields) => {
+      const index = harness.transactions.findIndex((row) => row.id === id);
+      harness.transactions[index] = {
+        ...harness.transactions[index]!,
+        ...fields,
+      } as TransactionEntity;
+      return [id];
+    });
+    const expected = await harness.connector.captureEvidenceTransaction({
+      budgetId: BUDGET_ID,
+      accountId: ACCOUNT_ID,
+      transactionId: 'settlement',
+    });
+    expect(expected.transaction.importedId).toBe('bank-import');
+    const transaction = singleInput({
+      parentId: 'settlement',
+      amount: original.amount!,
+      categoryId: DINING_ID,
+      notes: 'Original note',
+      payeeName: 'Existing Merchant',
+    });
+    const fence = vi.fn();
+    const result = await harness.connector.amendEvidenceTransaction(
+      { expected, transaction },
+      { budgetId: BUDGET_ID, assertExecutionCurrent: fence },
+    );
+    expectVerified(result, transaction);
+    expect(fence).toHaveBeenCalledTimes(1);
+    expect(harness.transactions[0]).toMatchObject({
+      id: 'settlement',
+      imported_id: 'bank-import',
+      cleared: true,
+      reconciled: false,
+      notes: 'Original note',
+      payee: 'payee_existing',
+      category: DINING_ID,
+      amount: -12500,
+    });
+    expect(harness.client.addTransactions).not.toHaveBeenCalled();
+    expect(await harness.connector.verifyEvidenceAmendment({ expected, transaction })).toBe(true);
+    Object.assign(harness.transactions[0]!, { custom_private_sdk_field: 'changed after write' });
+    expect(await harness.connector.verifyEvidenceAmendment({ expected, transaction })).toBe(false);
+  });
+  it('creates deterministic children for an unsplit imported settlement while preserving parent provenance', async () => {
+    const original = importedTransaction('settlement', 'bank-import', {
+      cleared: true,
+      reconciled: false,
+      error: null,
+    });
+    const harness = createHarness({ transactions: [original] });
+    await selectTestBudget(harness);
+    harness.client.updateTransaction = vi.fn(async (id, fields) => {
+      const parent = { ...harness.transactions[0]!, ...fields };
+      const children = (fields.subtransactions as Record<string, unknown>[]).map(
+        (child, index) =>
+          ({
+            ...child,
+            id: child.id ?? `${id}-child-${index}`,
+            account: ACCOUNT_ID,
+            date: original.date,
+            parent_id: id,
+            is_child: true,
+            is_parent: false,
+            cleared: original.cleared,
+            reconciled: original.reconciled,
+            error: null,
+          }) as TransactionEntity,
+      );
+      harness.transactions[0] = { ...parent, subtransactions: children } as TransactionEntity;
+      return [id];
+    });
+    const expected = await harness.connector.captureEvidenceTransaction({
+      budgetId: BUDGET_ID,
+      accountId: ACCOUNT_ID,
+      transactionId: 'settlement',
+    });
+    const transaction = singleInput({
+      parentId: 'settlement',
+      categoryId: null,
+      splits: [
+        { amount: -7500, accountId: ACCOUNT_ID, date: original.date, categoryId: GROCERIES_ID },
+        { amount: -5000, accountId: ACCOUNT_ID, date: original.date, categoryId: DINING_ID },
+      ],
+    });
+    expectVerified(
+      await harness.connector.amendEvidenceTransaction(
+        { expected, transaction },
+        { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+      ),
+      transaction,
+    );
+    expect(harness.transactions[0]).toMatchObject({
+      imported_id: 'bank-import',
+      cleared: true,
+      amount: -12500,
+      category: null,
+      is_parent: true,
+    });
+    expect(new Set(harness.transactions[0]!.subtransactions!.map((row) => row.id)).size).toBe(2);
+  });
+  it('refuses changed metadata, reconciled/transfer sources, identity changes and stale execution before dispatch', async () => {
+    const original = importedTransaction('settlement', 'bank-import', {
+      cleared: true,
+      reconciled: false,
+      error: null,
+    });
+    const harness = createHarness({ transactions: [original] });
+    await selectTestBudget(harness);
+    const expected = await harness.connector.captureEvidenceTransaction({
+      budgetId: BUDGET_ID,
+      accountId: ACCOUNT_ID,
+      transactionId: 'settlement',
+    });
+    harness.transactions[0]!.cleared = false;
+    const transaction = singleInput({ parentId: 'settlement', categoryId: DINING_ID });
+    expectFailure(
+      await harness.connector.amendEvidenceTransaction(
+        { expected, transaction },
+        { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+      ),
+      /SOURCE_PRECONDITION/,
+    );
+    harness.transactions[0]!.cleared = true;
+    expectFailure(
+      await harness.connector.amendEvidenceTransaction(
+        { expected, transaction: { ...transaction, amount: -12400 } },
+        { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+      ),
+      /INVALID_INPUT/,
+    );
+    await expect(
+      harness.connector.amendEvidenceTransaction(
+        { expected, transaction },
+        {
+          budgetId: BUDGET_ID,
+          assertExecutionCurrent: () => {
+            throw new Error('execution revoked');
+          },
+        },
+      ),
+    ).rejects.toThrow(/revoked/);
+    harness.transactions[0]!.reconciled = true;
+    await expect(
+      harness.connector.captureEvidenceTransaction({
+        budgetId: BUDGET_ID,
+        accountId: ACCOUNT_ID,
+        transactionId: 'settlement',
+      }),
+    ).rejects.toThrow(/reconciled/i);
+    harness.transactions[0]!.reconciled = false;
+    harness.transactions[0]!.transfer_id = 'transfer';
+    await expect(
+      harness.connector.captureEvidenceTransaction({
+        budgetId: BUDGET_ID,
+        accountId: ACCOUNT_ID,
+        transactionId: 'settlement',
+      }),
+    ).rejects.toThrow(/transfer/i);
+    expect(harness.client.updateTransaction).not.toHaveBeenCalled();
+  });
+  it.each(['imported_id', 'imported_payee', 'cleared', 'notes', 'payee', 'category'] as const)(
+    'rejects changed original %s before writing',
+    async (field) => {
+      const harness = createHarness({
+        transactions: [
+          importedTransaction('settlement', 'bank-import', {
+            cleared: true,
+            reconciled: false,
+            error: null,
+          }),
+        ],
+      });
+      await selectTestBudget(harness);
+      const expected = await harness.connector.captureEvidenceTransaction({
+        budgetId: BUDGET_ID,
+        accountId: ACCOUNT_ID,
+        transactionId: 'settlement',
+      });
+      Object.assign(harness.transactions[0]!, { [field]: field === 'cleared' ? false : 'changed' });
+      expectFailure(
+        await harness.connector.amendEvidenceTransaction(
+          { expected, transaction: singleInput({ parentId: 'settlement', categoryId: DINING_ID }) },
+          { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+        ),
+        /SOURCE_PRECONDITION/,
+      );
+      expect(harness.client.updateTransaction).not.toHaveBeenCalled();
+    },
+  );
+  it('preserves existing child identities and metadata and refuses a changed child ID', async () => {
+    const children = [
+      { id: 'child-a', amount: -7500, category: GROCERIES_ID },
+      { id: 'child-b', amount: -5000, category: DINING_ID },
+    ].map(
+      (child) =>
+        ({
+          ...child,
+          account: ACCOUNT_ID,
+          date: '2026-09-25',
+          parent_id: 'settlement',
+          is_child: true,
+          is_parent: false,
+          cleared: true,
+          reconciled: false,
+          notes: 'Existing child note',
+          error: null,
+        }) as TransactionEntity,
+    );
+    const harness = createHarness({
+      transactions: [
+        importedTransaction('settlement', 'bank-import', {
+          cleared: true,
+          reconciled: false,
+          is_parent: true,
+          category: null,
+          subtransactions: children,
+          error: null,
+        }),
+      ],
+    });
+    await selectTestBudget(harness);
+    harness.client.updateTransaction = vi.fn(async (id, fields) => {
+      harness.transactions[0] = { ...harness.transactions[0]!, ...fields } as TransactionEntity;
+      return [id];
+    });
+    const expected = await harness.connector.captureEvidenceTransaction({
+      budgetId: BUDGET_ID,
+      accountId: ACCOUNT_ID,
+      transactionId: 'settlement',
+    });
+    const transaction = singleInput({
+      parentId: 'settlement',
+      categoryId: null,
+      splits: [
+        { amount: -7500, categoryId: DINING_ID, accountId: ACCOUNT_ID, date: '2026-09-25' },
+        { amount: -5000, categoryId: GROCERIES_ID, accountId: ACCOUNT_ID, date: '2026-09-25' },
+      ],
+    });
+    harness.transactions[0]!.subtransactions![0]!.id = 'changed-child';
+    expectFailure(
+      await harness.connector.amendEvidenceTransaction(
+        { expected, transaction },
+        { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+      ),
+      /SOURCE_PRECONDITION/,
+    );
+    harness.transactions[0]!.subtransactions![0]!.id = 'child-a';
+    expectVerified(
+      await harness.connector.amendEvidenceTransaction(
+        { expected, transaction },
+        { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} },
+      ),
+      transaction,
+    );
+    expect(harness.transactions[0]!.subtransactions).toMatchObject([
+      { id: 'child-a', notes: 'Existing child note', category: DINING_ID },
+      { id: 'child-b', notes: 'Existing child note', category: GROCERIES_ID },
+    ]);
+  });
+  it('reports uncertain writes and post-read metadata corruption without retrying', async () => {
+    const harness = createHarness({
+      transactions: [
+        importedTransaction('settlement', 'bank-import', {
+          cleared: true,
+          reconciled: false,
+          error: null,
+        }),
+      ],
+    });
+    await selectTestBudget(harness);
+    const expected = await harness.connector.captureEvidenceTransaction({
+      budgetId: BUDGET_ID,
+      accountId: ACCOUNT_ID,
+      transactionId: 'settlement',
+    });
+    const input = {
+      expected,
+      transaction: singleInput({ parentId: 'settlement', categoryId: DINING_ID }),
+    };
+    const fence = { budgetId: BUDGET_ID, assertExecutionCurrent: () => {} };
+    harness.client.updateTransaction = vi.fn(async () => {
+      throw new Error('transport unavailable');
+    });
+    expectFailure(
+      await harness.connector.amendEvidenceTransaction(input, fence),
+      /WRITE_UNCERTAIN/,
+      true,
+    );
+    expect(harness.client.updateTransaction).toHaveBeenCalledTimes(1);
+    harness.client.updateTransaction = vi.fn(async (id, fields) => {
+      harness.transactions[0] = {
+        ...harness.transactions[0]!,
+        ...fields,
+        imported_id: 'corrupted',
+      } as TransactionEntity;
+      return [id];
+    });
+    expectFailure(
+      await harness.connector.amendEvidenceTransaction(input, fence),
+      /VERIFICATION_FAILED/,
+      true,
+    );
+    expect(harness.client.updateTransaction).toHaveBeenCalledTimes(1);
+  });
+  it('refuses contradictory parent and child identities before any SDK update', async () => {
+    const harness = createHarness({
+      transactions: [
+        importedTransaction('settlement', 'bank-import', { parent_id: 'other-parent' }),
+      ],
+    });
+    await selectTestBudget(harness);
+    await expect(
+      harness.connector.captureEvidenceTransaction({
+        budgetId: BUDGET_ID,
+        accountId: ACCOUNT_ID,
+        transactionId: 'settlement',
+      }),
+    ).rejects.toThrow(/parent identity/);
+    harness.transactions[0]!.parent_id = undefined;
+    harness.transactions[0]!.subtransactions = [
+      {
+        id: 'child',
+        parent_id: 'settlement',
+        account: 'foreign',
+        date: '2026-09-25',
+        amount: -12500,
+        is_child: true,
+        is_parent: false,
+      } as TransactionEntity,
+    ];
+    await expect(
+      harness.connector.captureEvidenceTransaction({
+        budgetId: BUDGET_ID,
+        accountId: ACCOUNT_ID,
+        transactionId: 'settlement',
+      }),
+    ).rejects.toThrow(/child identity/);
+    harness.transactions[0]!.subtransactions![0]!.account = ACCOUNT_ID;
+    await expect(
+      harness.connector.captureEvidenceTransaction({
+        budgetId: BUDGET_ID,
+        accountId: ACCOUNT_ID,
+        transactionId: 'settlement',
+      }),
+    ).rejects.toThrow(/split parent structure/);
+    expect(harness.client.updateTransaction).not.toHaveBeenCalled();
+  });
+});

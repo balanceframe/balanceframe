@@ -1,0 +1,77 @@
+{
+  "creditIntent": {
+    "kind": "evidence_credit",
+    "transaction": {
+      "parentId": "manual-parent-evidence-1",
+      "correlationId": "manual-correlation-evidence-1",
+      "accountId": "checking",
+      "amount": {
+        "minorUnits": "500",
+        "currency": "USD"
+      },
+      "date": "2026-09-06",
+      "categoryId": "food",
+      "payeeName": "Local shop",
+      "notes": null,
+      "splits": []
+    },
+    "evidenceIds": [
+      "fd-transaction-pending"
+    ]
+  },
+  "amendmentIntent": {
+    "kind": "evidence_amendment",
+    "transaction": {
+      "parentId": "manual-parent-evidence-1",
+      "correlationId": "manual-correlation-evidence-1",
+      "accountId": "checking",
+      "amount": {
+        "minorUnits": "-500",
+        "currency": "USD"
+      },
+      "date": "2026-09-06",
+      "categoryId": "food",
+      "payeeName": "Local shop",
+      "notes": null,
+      "splits": []
+    },
+    "evidenceIds": [
+      "fd-transaction-pending"
+    ],
+    "expected": {
+      "parentId": "manual-parent-evidence-1",
+      "accountId": "checking",
+      "amount": {
+        "minorUnits": "-500",
+        "currency": "USD"
+      },
+      "date": "2026-09-06",
+      "categoryId": null,
+      "payeeName": "Local shop",
+      "notes": null,
+      "splits": [],
+      "transferAccountId": null
+    },
+    "expectedSource": {
+      "id": "manual-parent-evidence-1",
+      "accountId": "checking",
+      "date": "2026-09-06",
+      "payeeId": null,
+      "payeeName": "Local shop",
+      "categoryId": null,
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "-500",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": "settlement-original",
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    }
+  }
+}

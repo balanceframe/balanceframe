@@ -19,9 +19,11 @@ import type {
   StoredProspectiveClaim,
 } from '@balanceframe/workflow-store';
 import type {
+  ConsequentialActionPlan,
   AccountAwareSpendabilityRequest,
   AccountAwareSpendabilityResult,
   FinancialSnapshot,
+  SourceObservation,
   DecisionCard,
   DecisionCardAdjustment,
   DecisionCardWarningThreshold,
@@ -129,6 +131,15 @@ export interface LiquidityServiceOptions {
   store: WorkflowStore;
   native: LiquidityNative;
   clock?: () => Date;
+  /** Recompute currently authorized evidence inside the existing Actual lifecycle lock. */
+  transactionEvidence?: {
+    captureObservations(
+      actor: LiquidityActor,
+      config: { serverUrl: string; budgetId: string },
+      snapshot: FinancialSnapshot,
+      postconditionPlan?: ConsequentialActionPlan,
+    ): Promise<SourceObservation[]>;
+  };
 }
 interface EvaluationState {
   policy: LiquidityPolicyRecord | null;
@@ -154,12 +165,29 @@ export class LiquidityService {
   withConsequentialActionCapture<T>(
     actor: LiquidityActor,
     operation: (capture: ConsequentialActionCapture, connected: ConnectedBudget) => Promise<T>,
-    options?: { mutation?: boolean },
+    options?: { mutation?: boolean; postconditionPlan?: ConsequentialActionPlan },
   ): Promise<T> {
     const manager = options?.mutation ? this.options.mutationConnectionManager : undefined;
     if (options?.mutation && !manager) throw new Error('Mutation connection unavailable');
     return this.capture(actor, async (capture, connected) => {
-      const decisionCardRequest = (
+        if (this.options.transactionEvidence) {
+          const observations = await this.options.transactionEvidence.captureObservations(
+            actor,
+            connected.config,
+            capture.snapshot,
+            options?.postconditionPlan,
+          );
+          capture.snapshot = financialSnapshotSchema.parse({
+            ...capture.snapshot,
+            observations: [...capture.snapshot.observations, ...observations],
+          });
+          capture.projector = new LiquidityProjector(
+          this.options.store,
+          { ...actor, now: capture.now },
+          capture.snapshot,
+        );
+        }
+        const decisionCardRequest = (
         decision: ConsequentialActionDecision,
         excludedHistoricalTransactionIds: readonly string[] = [],
       ): DecisionCardRequest => {
@@ -208,7 +236,9 @@ export class LiquidityService {
         supplemental: capture.state.supplemental,
         decisionCardRequest,
       }, connected);
-    }, false, manager ?? this.options.connectionManager);
+    }, false, manager ?? this.options.connectionManager,
+      options?.postconditionPlan,
+    );
   }
   private require(
     actor: LiquidityActor,
@@ -296,6 +326,7 @@ export class LiquidityService {
     operation: (capture: Capture, connected: ConnectedBudget) => Promise<T>,
     raw = false,
     manager: ConnectionManager = this.options.connectionManager,
+    postconditionPlan?: ConsequentialActionPlan,
   ): Promise<T> {
     const config = await manager.loadConfig();
     if (!config || config.budgetId !== actor.budgetId)
@@ -326,7 +357,22 @@ export class LiquidityService {
         this.options.store.liquidity.expire({ ...actor, now });
       const state = this.options.store.liquidity.loadEvaluationState({ ...actor, now });
       let snapshot: FinancialSnapshot = base;
-      if (
+        // Readback validates prior attestations against the exact approved pre-amendment rows.
+        // Current rows remain in the published snapshot and native verification checks the full inverse.
+        const inverseForAttestations = structuredClone(base);
+        for (const atom of postconditionPlan?.action.kind === 'composite'
+          ? postconditionPlan.action.actions
+          : postconditionPlan
+            ? [postconditionPlan.action]
+            : [])
+          if (atom.kind === 'evidence_amendment') {
+            const index = inverseForAttestations.legacySnapshot.transactions.findIndex(
+              (row) => row.id === atom.expected.parentId,
+            );
+            if (index >= 0)
+              inverseForAttestations.legacySnapshot.transactions[index] = atom.expectedSource;
+          }
+        if (
         !raw &&
         state.supplemental &&
         Date.parse(state.supplemental.expiresAt) > Date.parse(now)
@@ -337,7 +383,7 @@ export class LiquidityService {
         const valid = observations.filter((observation) => {
           if (Date.parse(observation.expiresAt) <= Date.parse(now)) return false;
           try {
-            mergeUserAttestedLiquidityObservations(base, [observation]);
+            mergeUserAttestedLiquidityObservations(inverseForAttestations, [observation]);
             return true;
           } catch (error) {
             if (
@@ -350,7 +396,8 @@ export class LiquidityService {
             throw error;
           }
         });
-        snapshot = mergeUserAttestedLiquidityObservations(base, valid);
+          const attested = mergeUserAttestedLiquidityObservations(inverseForAttestations, valid);
+          snapshot = { ...base, liquidity: attested.liquidity };
       }
       let collectionReceipts = 0;
       let collectionComplete = false;

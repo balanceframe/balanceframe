@@ -1688,6 +1688,7 @@ fn verification_rechecks_evidence_and_normalizes_only_capture_metadata() {
     post_input["decisionCardRequest"]["context"]["snapshotId"] = json!("snapshot-after-write");
     post_input["decisionCardRequest"]["context"]["contentHash"] = json!("content-after-write");
     post_input["decisionCardRequest"]["context"]["evaluatedAt"] = json!("2026-09-06T10:02:00Z");
+    post_input["evaluatedAt"] = json!("2026-09-06T10:02:00Z");
     let post = verify(verify_request(
         planned.clone(),
         post_input.clone(),
@@ -2222,6 +2223,18 @@ fn postconditions_allow_only_invalidated_supplemental_facts_for_mutated_accounts
         }));
     recapture_actual_source(&mut manual, "2026-09-06T10:01:00Z");
     apply_actual_account_projection(&mut manual, "checking", "2026-09-06T10:01:00Z");
+    let mut future_capture = manual.clone();
+    future_capture["evaluatedAt"] = json!(EVALUATED_AT);
+    assert_eq!(
+        verify(verify_request(
+            manual_plan.clone(),
+            future_capture,
+            "postconditions"
+        ))["valid"],
+        false,
+        "future capture is refused even when human freshness was invalidated"
+    );
+    manual["evaluatedAt"] = json!("2026-09-06T10:01:00Z");
     assert_eq!(
         verify(verify_request(
             manual_plan.clone(),
@@ -2270,6 +2283,7 @@ fn postconditions_allow_only_invalidated_supplemental_facts_for_mutated_accounts
         }));
     recapture_actual_source(&mut existing_payee, "2026-09-06T10:01:00Z");
     apply_actual_account_projection(&mut existing_payee, "checking", "2026-09-06T10:01:00Z");
+    existing_payee["evaluatedAt"] = json!("2026-09-06T10:01:00Z");
     assert_eq!(
         verify(verify_request(
             existing_payee_plan,
@@ -4313,4 +4327,781 @@ fn composite_manual_and_transfer_can_reach_the_exact_protected_buffer() {
             "transfer_first={transfer_first}"
         );
     }
+}
+
+fn evidence_credit_request() -> Value {
+    let mut input = evidence_projection_request();
+    input["intent"]["kind"] = json!("evidence_credit");
+    input["intent"]["transaction"]["amount"] = money(500, "USD");
+    input["decisionCardRequest"]["items"] = json!([]);
+    let observations = input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap();
+    let resolution = observations
+        .iter_mut()
+        .find(|o| o["kind"] == "economic_event_resolution")
+        .unwrap();
+    resolution["ledgerEffect"]["amount"] = money(500, "USD");
+    input
+}
+fn evidence_amendment_request() -> Value {
+    let mut input = evidence_projection_request();
+    let tx = input["intent"]["transaction"].clone();
+    let mut expected = actual_manual_row(&tx);
+    expected["categoryId"] = Value::Null;
+    let source = json!({"id":tx["parentId"],"accountId":tx["accountId"],"date":tx["date"],"payeeId":null,"payeeName":tx["payeeName"],"categoryId":null,"categoryName":null,"amount":tx["amount"],"cleared":true,"reconciled":false,"importedId":"settlement-original","importedPayee":null,"notes":tx["notes"],"tags":[],"transferAccountId":null,"subtransactions":[]});
+    input["currentLedger"]["transactions"] = json!([expected.clone()]);
+    input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"] =
+        json!([source.clone()]);
+    input["decisionCardRequest"]["items"] = json!([]);
+    input["intent"] = json!({"kind":"evidence_amendment","expected":expected,"expectedSource":source,"transaction":tx,"evidenceIds":input["intent"]["evidenceIds"]});
+    input
+}
+#[test]
+fn governed_evidence_credit_is_positive_source_bound_and_manual_remains_debit_only() {
+    let input = evidence_credit_request();
+    let proposed = plan(input.clone());
+    assert_eq!(proposed["action"]["kind"], "evidence_credit");
+    assert!(hash_is_sha256(&proposed["actionHash"]));
+    assert_eq!(
+        verify(verify_request(
+            proposed.clone(),
+            input.clone(),
+            "preconditions"
+        ))["valid"],
+        true
+    );
+    let mut after = input.clone();
+    let tx = after["intent"]["transaction"].clone();
+    apply_manual_postconditions(&mut after, &tx, 13500, 2500);
+    assert_eq!(
+        verify(verify_request(
+            proposed.clone(),
+            after.clone(),
+            "postconditions"
+        ))["valid"],
+        true
+    );
+    after["currentLedger"]["transactions"][0]["amount"] = money(499, "USD");
+    assert_eq!(
+        verify(verify_request(proposed, after, "postconditions"))["valid"],
+        false
+    );
+    for amount in [0, -500] {
+        let mut invalid = input.clone();
+        invalid["intent"]["transaction"]["amount"] = money(amount, "USD");
+        assert!(plan_request(invalid).is_err());
+    }
+    let mut manual = input;
+    manual["intent"] =
+        json!({"kind":"manual_transaction","transaction":manual["intent"]["transaction"]});
+    assert!(plan_request(manual).is_err());
+}
+#[test]
+fn governed_amendment_changes_only_category_or_splits_and_pins_full_original_source() {
+    let input = evidence_amendment_request();
+    let proposed = plan(input.clone());
+    assert_eq!(proposed["action"]["kind"], "evidence_amendment");
+    assert_eq!(
+        verify(verify_request(
+            proposed.clone(),
+            input.clone(),
+            "preconditions"
+        ))["valid"],
+        true
+    );
+    let mut after = input.clone();
+    let tx = after["intent"]["transaction"].clone();
+    after["currentLedger"]["transactions"][0] = actual_manual_row(&tx);
+    after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+        ["categoryId"] = tx["categoryId"].clone();
+    category_fact_mut(&mut after, "food")["availability"] = money(1500, "USD");
+    assert_eq!(
+        verify(verify_request(
+            proposed.clone(),
+            after.clone(),
+            "postconditions"
+        ))["valid"],
+        true
+    );
+    after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+        ["importedId"] = json!("changed-import");
+    assert_eq!(
+        verify(verify_request(proposed.clone(), after, "postconditions"))["valid"],
+        false
+    );
+    for (pointer, value) in [
+        ("/intent/transaction/amount", money(-499, "USD")),
+        ("/intent/transaction/accountId", json!("savings")),
+        ("/intent/transaction/date", json!("2026-09-07")),
+        ("/intent/transaction/payeeName", json!("Changed")),
+        ("/intent/expectedSource/reconciled", json!(true)),
+    ] {
+        let mut invalid = input.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(plan_request(invalid).is_err(), "{pointer}");
+    }
+    let mut stale = input;
+    stale["currentLedger"]["transactions"][0]["notes"] = json!("external change");
+    assert_eq!(
+        verify(verify_request(proposed, stale, "preconditions"))["valid"],
+        false
+    );
+}
+#[test]
+fn exact_amendment_readback_with_a_new_capture_uses_verified_observation_time_after_expiry() {
+    let mut input = evidence_amendment_request();
+    recapture_actual_source(&mut input, EVALUATED_AT);
+    let original = plan(input.clone());
+    let transaction = input["intent"]["transaction"].clone();
+    let mut after = input.clone();
+    after["currentLedger"]["transactions"][0] = actual_manual_row(&transaction);
+    after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+        ["categoryId"] = transaction["categoryId"].clone();
+    category_fact_mut(&mut after, "food")["availability"] = money(1500, "USD");
+    for captured_at in ["2026-09-06T10:02:00Z", "2026-09-07T18:00:00Z"] {
+        let mut captured = after.clone();
+        recapture_actual_source(&mut captured, captured_at);
+        captured["evaluatedAt"] = json!(captured_at);
+        captured["decisionCardRequest"]["context"]["evaluatedAt"] = json!(EVALUATED_AT);
+        assert_eq!(
+            verify(verify_request(
+                original.clone(),
+                captured.clone(),
+                "postconditions"
+            ))["valid"],
+            true,
+            "exact read-only recovery at {captured_at}"
+        );
+        let mut future = captured.clone();
+        future["evaluatedAt"] = json!(EVALUATED_AT);
+        assert_eq!(
+            verify(verify_request(original.clone(), future, "postconditions"))["valid"],
+            false,
+            "future captures cannot be rebased into authority"
+        );
+        if captured_at.starts_with("2026-09-07") {
+            assert_eq!(
+                verify(verify_request(
+                    original.clone(),
+                    captured.clone(),
+                    "preconditions"
+                ))["valid"],
+                false,
+                "expired recovery cannot authorize dispatch"
+            );
+            assert!(
+                plan_request(captured.clone()).is_err(),
+                "expired rereads cannot create a new approval"
+            );
+        }
+        captured["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+            ["notes"] = json!("unauthorized edit");
+        assert_eq!(
+            verify(verify_request(original.clone(), captured, "postconditions"))["valid"],
+            false
+        );
+    }
+}
+
+#[test]
+fn amendment_splits_verify_new_child_metadata_and_exact_category_effects() {
+    let mut input = evidence_amendment_request();
+    let splits = json!([{"categoryId":"food","amount":money(-200,"USD")},{"categoryId":"reserve","amount":money(-300,"USD")}]);
+    input["intent"]["transaction"]["categoryId"] = Value::Null;
+    input["intent"]["transaction"]["splits"] = splits.clone();
+    let resolution = input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|o| o["kind"] == "economic_event_resolution")
+        .unwrap();
+    resolution["ledgerEffect"]["categoryId"] = Value::Null;
+    resolution["ledgerEffect"]["splits"] = splits;
+    let proposed = plan(input.clone());
+    let mut after = input.clone();
+    after["currentLedger"]["transactions"][0] = actual_manual_row(&input["intent"]["transaction"]);
+    let mut children = vec![];
+    for (index, split) in input["intent"]["transaction"]["splits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let mut child = input["intent"]["expectedSource"].clone();
+        child["id"] = json!(format!("amended-child-{index}"));
+        child["payeeName"] = Value::Null;
+        child["importedId"] = Value::Null;
+        child["categoryId"] = split["categoryId"].clone();
+        child["amount"] = split["amount"].clone();
+        children.push(child);
+    }
+    after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+        ["subtransactions"] = json!(children);
+    category_fact_mut(&mut after, "food")["availability"] = money(1800, "USD");
+    category_fact_mut(&mut after, "reserve")["availability"] = money(5700, "USD");
+    assert_eq!(
+        verify(verify_request(
+            proposed.clone(),
+            after.clone(),
+            "postconditions"
+        ))["valid"],
+        true
+    );
+    after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+        ["subtransactions"][0]["notes"] = json!("unapproved metadata");
+    assert_eq!(
+        verify(verify_request(proposed, after, "postconditions"))["valid"],
+        false
+    );
+}
+#[test]
+fn evidence_credit_and_amendment_refuse_stale_missing_conflicting_or_overflowing_facts() {
+    for pointer in [
+        "/decisionCardRequest/financialSnapshot/capturedAt",
+        "/decisionCardRequest/liquidityPolicy/expiresAt",
+    ] {
+        let mut stale = evidence_credit_request();
+        *stale.pointer_mut(pointer).unwrap() = json!("2026-01-01T00:00:00Z");
+        assert!(plan_request(stale).is_err());
+    }
+    let mut overflow = evidence_credit_request();
+    ledger_account_mut(&mut overflow, "checking")["balance"] = money(i64::MAX, "USD");
+    account_fact_mut(&mut overflow, "checking")["recordedBalance"] = money(i64::MAX, "USD");
+    assert!(plan_request(overflow).unwrap_err().contains("overflow"));
+    let mut missing = evidence_credit_request();
+    missing["intent"]["evidenceIds"] = json!([]);
+    assert!(plan_request(missing).is_err());
+    for (pointer, value) in [
+        ("/intent/transaction/categoryId", json!("missing")),
+        ("/intent/transaction/amount", money(500, "EUR")),
+        ("/intent/transaction/date", json!("2026-09-07")),
+        (
+            "/decisionCardRequest/context/policy/maxBudgetSnapshotAgeMinutes",
+            Value::Null,
+        ),
+    ] {
+        let mut invalid = evidence_credit_request();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(plan_request(invalid).is_err(), "{pointer}");
+    }
+    let input = evidence_amendment_request();
+    for (pointer, value) in [
+        ("/intent/expectedSource/importedId", json!("changed")),
+        ("/intent/expected/transferAccountId", json!("savings")),
+        ("/intent/transaction/parentId", json!("different-parent")),
+    ] {
+        let mut invalid = input.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(plan_request(invalid).is_err(), "{pointer}");
+    }
+    let mut wrong_target = input.clone();
+    wrong_target["resolvedEvidence"][1]["subjectId"] = json!("other-event");
+    assert!(plan_request(wrong_target).is_err());
+    let mut missing = input;
+    missing["currentLedger"]["transactions"] = json!([]);
+    assert!(plan_request(missing).is_err());
+}
+#[test]
+fn existing_split_amendment_preserves_child_ids_and_metadata_and_refuses_reshape() {
+    let mut input = evidence_amendment_request();
+    let before_splits = json!([{"categoryId":"reserve","amount":money(-500,"USD")}]);
+    input["intent"]["expected"]["splits"] = before_splits;
+    let mut child = input["intent"]["expectedSource"].clone();
+    child["id"] = json!("existing-child");
+    child["categoryId"] = json!("reserve");
+    child["notes"] = json!("retain child note");
+    input["intent"]["expectedSource"]["subtransactions"] = json!([child]);
+    input["currentLedger"]["transactions"][0] = input["intent"]["expected"].clone();
+    input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0] =
+        input["intent"]["expectedSource"].clone();
+    let after_splits = json!([{"categoryId":"food","amount":money(-500,"USD")}]);
+    input["intent"]["transaction"]["categoryId"] = Value::Null;
+    input["intent"]["transaction"]["splits"] = after_splits.clone();
+    let resolution = input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|o| o["kind"] == "economic_event_resolution")
+        .unwrap();
+    resolution["ledgerEffect"]["categoryId"] = Value::Null;
+    resolution["ledgerEffect"]["splits"] = after_splits;
+    let proposed = plan(input.clone());
+    let mut after = input.clone();
+    after["currentLedger"]["transactions"][0] = actual_manual_row(&input["intent"]["transaction"]);
+    after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+        ["subtransactions"][0]["categoryId"] = json!("food");
+    category_fact_mut(&mut after, "reserve")["availability"] = money(6500, "USD");
+    category_fact_mut(&mut after, "food")["availability"] = money(1500, "USD");
+    assert_eq!(
+        verify(verify_request(
+            proposed.clone(),
+            after.clone(),
+            "postconditions"
+        ))["valid"],
+        true
+    );
+    after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+        ["subtransactions"][0]["id"] = json!("replaced-child");
+    assert_eq!(
+        verify(verify_request(proposed, after, "postconditions"))["valid"],
+        false
+    );
+    input["intent"]["transaction"]["splits"] = json!([]);
+    input["intent"]["transaction"]["categoryId"] = json!("food");
+    assert!(plan_request(input).unwrap_err().contains("reshape"));
+}
+#[test]
+fn governed_credit_splits_conserve_the_inflow_and_reject_mixed_sign_or_category_parent() {
+    let mut input = evidence_credit_request();
+    input["intent"]["transaction"]["categoryId"] = Value::Null;
+    input["intent"]["transaction"]["splits"] =
+        json!([{"categoryId":"food","amount":money(500,"USD")}]);
+    let resolution = input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|o| o["kind"] == "economic_event_resolution")
+        .unwrap();
+    resolution["ledgerEffect"]["categoryId"] = Value::Null;
+    resolution["ledgerEffect"]["splits"] = json!([{"categoryId":"food","amount":money(500,"USD")}]);
+    assert!(plan_request(input.clone()).is_ok());
+    for (pointer, value) in [
+        ("/intent/transaction/splits/0/amount", money(-500, "USD")),
+        ("/intent/transaction/splits/0/amount", money(499, "USD")),
+        ("/intent/transaction/categoryId", json!("food")),
+    ] {
+        let mut invalid = input.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(plan_request(invalid).is_err());
+    }
+    let mut duplicate = evidence_credit_request();
+    duplicate["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"] =
+        json!([evidence_amendment_request()["intent"]["expectedSource"]]);
+    assert!(plan_request(duplicate)
+        .unwrap_err()
+        .contains("duplicate_evidence_credit_source"));
+}
+#[test]
+fn amendment_requires_original_category_facts_before_dispatch() {
+    let mut input = evidence_amendment_request();
+    input["intent"]["expected"]["categoryId"] = json!("reserve");
+    input["intent"]["expectedSource"]["categoryId"] = json!("reserve");
+    input["currentLedger"]["transactions"][0] = input["intent"]["expected"].clone();
+    input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0] =
+        input["intent"]["expectedSource"].clone();
+    input["decisionCardRequest"]["financialSnapshot"]["liquidity"]["categories"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|category| category["categoryId"] != "reserve");
+    assert!(plan_request(input).is_err());
+}
+
+fn shared_statement_credit_request() -> Value {
+    let mut input = evidence_credit_request();
+    let original = input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "economic_event_resolution")
+        .unwrap()
+        .clone();
+    let mut second = original;
+    second["scope"]["id"] = json!("statement-event-two");
+    second["contentHash"] = json!("statement-event-two-hash");
+    input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .push(second);
+    let mut proof = input["resolvedEvidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["evidenceId"] == input["intent"]["evidenceIds"][0])
+        .unwrap()
+        .clone();
+    proof["subjectId"] = json!("statement-event-two");
+    proof["contentHash"] = json!("statement-event-two-hash");
+    input["resolvedEvidence"]
+        .as_array_mut()
+        .unwrap()
+        .push(proof);
+    input
+}
+
+#[test]
+fn shared_statement_requires_exact_subject_and_allows_distinct_event_composite() {
+    let input = shared_statement_credit_request();
+    assert!(
+        plan_request(input.clone()).is_err(),
+        "legacy ambiguous document cannot choose first proof"
+    );
+    let original_subject = input["resolvedEvidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["evidenceId"] == input["intent"]["evidenceIds"][0])
+        .unwrap()["subjectId"]
+        .clone();
+    let mut first = input.clone();
+    first["intent"]["resolutionSubjectId"] = original_subject;
+    assert_eq!(
+        plan(first.clone())["evidenceReferences"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut second = input.clone();
+    second["intent"]["resolutionSubjectId"] = json!("statement-event-two");
+    second["intent"]["transaction"]["parentId"] = json!("statement-credit-two");
+    second["intent"]["transaction"]["correlationId"] = json!("statement-correlation-two");
+    assert_eq!(
+        plan(second.clone())["evidenceReferences"][0]["subjectId"],
+        "statement-event-two"
+    );
+    let mut composite = input.clone();
+    composite["intent"] = json!({"kind":"composite","actions":[first["intent"],second["intent"]]});
+    let planned = plan(composite.clone());
+    assert_eq!(planned["evidenceReferences"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        verify(verify_request(planned, composite.clone(), "preconditions"))["valid"],
+        true
+    );
+    composite["intent"]["actions"][1]["resolutionSubjectId"] =
+        composite["intent"]["actions"][0]["resolutionSubjectId"].clone();
+    assert!(
+        plan_request(composite).is_err(),
+        "same event cannot be consumed twice"
+    );
+    for selector in ["", "unknown-event"] {
+        let mut invalid = first.clone();
+        invalid["intent"]["resolutionSubjectId"] = json!(selector);
+        assert!(plan_request(invalid).is_err());
+    }
+}
+
+#[test]
+fn independent_identical_events_cannot_supply_one_projection_even_with_distinct_documents() {
+    let mut input = shared_statement_credit_request();
+    let observations = input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap();
+    let second = observations.last_mut().unwrap();
+    second["evidence"][0]["evidenceId"] = json!("second-document");
+    input["resolvedEvidence"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()["evidenceId"] = json!("second-document");
+    input["intent"]["evidenceIds"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("second-document"));
+    assert!(plan_request(input)
+        .unwrap_err()
+        .contains("projection_multiple_event_subjects"));
+    let mut duplicate = shared_statement_credit_request();
+    let repeated = duplicate["resolvedEvidence"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    duplicate["resolvedEvidence"]
+        .as_array_mut()
+        .unwrap()
+        .push(repeated);
+    assert!(plan_request(duplicate)
+        .unwrap_err()
+        .contains("invalid_or_duplicate_evidence"));
+}
+
+#[test]
+fn evidence_subject_selector_is_optional_but_never_nullable() {
+    for mut input in [
+        evidence_projection_request(),
+        evidence_credit_request(),
+        evidence_amendment_request(),
+    ] {
+        assert!(plan_request(input.clone()).is_ok());
+        input["intent"]["resolutionSubjectId"] = Value::Null;
+        assert!(
+            plan_request(input).is_err(),
+            "explicit null cannot bypass the strict selector contract"
+        );
+    }
+}
+
+fn wallet_opening_request() -> Value {
+    let mut value = request();
+    value["intent"] = json!({"kind":"wallet_materialization","walletId":"wallet-new-1","accountName":"Emergency savings","currency":"USD","opening":{"amount":money(1200,"USD"),"date":"2026-09-01","proofSetHash":"a".repeat(64),"activityManifestHash":"b".repeat(64)}});
+    value["decisionCardRequest"]["financialSnapshot"]["observations"].as_array_mut().unwrap().push(json!({"kind":"wallet_statement_anchor","version":"wallet-statement-v1","scope":{"kind":"claim","id":"wallet-new-1"},"state":"resolved","observedAt":EVALUATED_AT,"contentHash":"a".repeat(64),"walletBalanceAnchor":{"walletId":"wallet-new-1","amount":money(1200,"USD"),"asOfDate":"2026-09-01","boundary":"before_day_activity","proofIds":["statement-proof"],"proofSetHash":"a".repeat(64),"activityManifestHash":"b".repeat(64),"evidenceIds":["statement-document"]},"evidence":[{"evidenceId":"statement-document","kind":"human_attested_statement","authorized":true,"redaction":"visible"}]}));
+    value["resolvedEvidence"].as_array_mut().unwrap().push(json!({"evidenceId":"statement-document","subjectId":"wallet-new-1","state":"resolved","contentHash":"a".repeat(64)}));
+    value
+}
+
+#[test]
+fn nonzero_wallet_opening_requires_exact_current_before_activity_attestation() {
+    let value = wallet_opening_request();
+    let result =
+        plan_request(value.clone()).expect("exact human-attested opening equity is supported");
+    assert_eq!(result["action"]["opening"]["amount"], money(1200, "USD"));
+    assert!(result["expectedPostconditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["kind"] == "wallet_opening_equity" && p["amount"] == money(1200, "USD")));
+    assert!(result["evidenceReferences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["evidenceId"] == "statement-document"));
+    for (path, changed) in [
+        ("amount", money(0, "USD")),
+        ("amount", money(-1, "USD")),
+        ("amount", money(1200, "EUR")),
+        ("date", json!("2026-09-02")),
+        ("proofSetHash", json!("c".repeat(64))),
+        ("activityManifestHash", json!("c".repeat(64))),
+    ] {
+        let mut invalid = value.clone();
+        invalid["intent"]["opening"][path] = changed;
+        assert!(plan_request(invalid).is_err(), "{path}");
+    }
+    for (field, changed) in [
+        ("boundary", json!("after_day_activity")),
+        ("walletId", json!("another-wallet")),
+    ] {
+        let mut invalid = value.clone();
+        let observations = invalid["decisionCardRequest"]["financialSnapshot"]["observations"]
+            .as_array_mut()
+            .unwrap();
+        observations.last_mut().unwrap()["walletBalanceAnchor"][field] = changed;
+        assert!(plan_request(invalid).is_err());
+    }
+    let mut unauthorized = value.clone();
+    unauthorized["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()["evidence"][0]["authorized"] = json!(false);
+    assert!(plan_request(unauthorized).is_err());
+    let mut duplicate = value.clone();
+    let observations = duplicate["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap();
+    observations.push(observations.last().unwrap().clone());
+    assert!(plan_request(duplicate).is_ok());
+    let mut missing = value;
+    missing["resolvedEvidence"] = json!([]);
+    assert!(plan_request(missing).is_err());
+}
+
+fn apply_wallet_opening_postconditions(value: &mut Value) {
+    apply_wallet_postconditions(value, true);
+    for account in value["currentLedger"]["accounts"].as_array_mut().unwrap() {
+        if account["accountId"] == "actual-wallet-account-1" {
+            account["balance"] = money(1200, "USD");
+        }
+    }
+    for account in value["decisionCardRequest"]["financialSnapshot"]["liquidity"]["accounts"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if account["accountId"] == "actual-wallet-account-1" {
+            account["recordedBalance"] = money(1200, "USD");
+        }
+    }
+    for account in value["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["accounts"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if account["id"] == "actual-wallet-account-1" {
+            account["clearedBalance"] = money(1200, "USD");
+            account["importedBalance"] = money(1200, "USD");
+        }
+    }
+    value["currentLedger"]["transactions"].as_array_mut().unwrap().push(json!({"parentId":"opening-row","accountId":"actual-wallet-account-1","amount":money(1200,"USD"),"date":"2026-09-01","categoryId":null,"payeeName":"Starting Balance","notes":null,"splits":[],"transferAccountId":null}));
+    value["currentLedger"]["walletOpeningEquities"] = json!([{"walletId":"wallet-new-1","accountId":"actual-wallet-account-1","transactionId":"opening-row","amount":money(1200,"USD"),"date":"2026-09-01","startingBalance":true,"sdkFingerprint":"c".repeat(64),"payeeId":"starting-payee","categoryId":null}]);
+    value["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"].as_array_mut().unwrap().push(json!({"id":"opening-row","accountId":"actual-wallet-account-1","amount":money(1200,"USD"),"date":"2026-09-01","categoryId":null,"categoryName":null,"payeeId":"starting-payee","payeeName":"Starting Balance","notes":null,"cleared":true,"reconciled":false,"importedId":null,"importedPayee":null,"transferAccountId":null,"tags":[],"subtransactions":[]}));
+    value["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"].as_array_mut().unwrap().push(json!({"id":"starting-payee","name":"Starting Balance","transferAccountId":null,"mtid":null}));
+}
+#[test]
+fn nonzero_wallet_equity_postconditions_restore_only_exact_native_equity_and_reject_ordinary_credits(
+) {
+    let before = wallet_opening_request();
+    let planned = plan(before.clone());
+    let mut after = before.clone();
+    apply_wallet_opening_postconditions(&mut after);
+    assert_eq!(
+        verify(verify_request(
+            planned.clone(),
+            after.clone(),
+            "postconditions"
+        ))["valid"],
+        true
+    );
+    for (field, changed) in [
+        ("startingBalance", json!(false)),
+        ("amount", money(1201, "USD")),
+        ("date", json!("2026-09-02")),
+        ("sdkFingerprint", json!("bad")),
+        ("accountId", json!("checking")),
+    ] {
+        let mut invalid = after.clone();
+        invalid["currentLedger"]["walletOpeningEquities"][0][field] = changed;
+        assert_ne!(
+            verify(verify_request(planned.clone(), invalid, "postconditions"))["valid"],
+            true,
+            "{field}"
+        );
+    }
+    for (field, changed) in [
+        ("cleared", json!(false)),
+        ("notes", json!("changed")),
+        ("payeeId", json!("another-payee")),
+        ("importedId", json!("external")),
+        ("reconciled", json!(true)),
+    ] {
+        let mut invalid = after.clone();
+        invalid["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"][0]
+            [field] = changed;
+        assert_ne!(
+            verify(verify_request(planned.clone(), invalid, "postconditions"))["valid"],
+            true,
+            "{field}"
+        );
+    }
+    let mut missing = after.clone();
+    missing["currentLedger"]
+        .as_object_mut()
+        .unwrap()
+        .remove("walletOpeningEquities");
+    assert_ne!(
+        verify(verify_request(planned.clone(), missing, "postconditions"))["valid"],
+        true
+    );
+    let mut unrelated = after;
+    unrelated["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"]
+        .as_array_mut()
+        .unwrap()
+        .push(
+            json!({"id":"unrelated","name":"Other new payee","transferAccountId":null,"mtid":null}),
+        );
+    assert_ne!(
+        verify(verify_request(planned, unrelated, "postconditions"))["valid"],
+        true
+    );
+}
+
+#[test]
+fn independent_wallet_openings_share_only_the_sdk_created_starting_balance_payee() {
+    let mut before = wallet_opening_request();
+    let mut second = before["intent"].clone();
+    second["walletId"] = json!("wallet-new-2");
+    second["accountName"] = json!("Reserve cash");
+    second["opening"]["amount"] = money(800, "USD");
+    before["intent"] = json!({"kind":"composite","actions":[before["intent"].clone(),second]});
+    let observations = before["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap();
+    let mut anchor = observations.last().unwrap().clone();
+    anchor["scope"]["id"] = json!("wallet-new-2");
+    anchor["walletBalanceAnchor"]["walletId"] = json!("wallet-new-2");
+    anchor["walletBalanceAnchor"]["amount"] = money(800, "USD");
+    anchor["walletBalanceAnchor"]["evidenceIds"] = json!(["second-document"]);
+    anchor["evidence"][0]["evidenceId"] = json!("second-document");
+    observations.push(anchor);
+    before["resolvedEvidence"].as_array_mut().unwrap().push(json!({"evidenceId":"second-document","subjectId":"wallet-new-2","state":"resolved","contentHash":"a".repeat(64)}));
+    let planned = plan(before.clone());
+    let mut after = before;
+    apply_wallet_opening_postconditions(&mut after);
+    for (collection, id_key) in [
+        ("accounts", "accountId"),
+        ("transactions", "parentId"),
+        ("walletOpeningEquities", "accountId"),
+    ] {
+        let rows = after["currentLedger"][collection].as_array_mut().unwrap();
+        let mut row = rows.last().unwrap().clone();
+        row[id_key] = json!(if collection == "transactions" {
+            "opening-row-2"
+        } else {
+            "actual-wallet-account-2"
+        });
+        if collection == "accounts" {
+            row["name"] = json!("Reserve cash");
+            row["balance"] = money(800, "USD");
+        } else {
+            row["accountId"] = json!("actual-wallet-account-2");
+            row["amount"] = money(800, "USD");
+            if collection == "walletOpeningEquities" {
+                row["walletId"] = json!("wallet-new-2");
+                row["transactionId"] = json!("opening-row-2");
+            }
+        }
+        rows.push(row);
+    }
+    after["currentLedger"]["wallets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"walletId":"wallet-new-2","accountId":"actual-wallet-account-2"}));
+    let facts = after["decisionCardRequest"]["financialSnapshot"]["liquidity"]["accounts"]
+        .as_array_mut()
+        .unwrap();
+    let mut fact = facts.last().unwrap().clone();
+    fact["accountId"] = json!("actual-wallet-account-2");
+    fact["recordedBalance"] = money(800, "USD");
+    facts.push(fact);
+    for collection in ["accounts", "transactions", "payees"] {
+        let rows = after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"][collection]
+            .as_array_mut()
+            .unwrap();
+        let mut row = if collection == "payees" {
+            rows.iter()
+                .find(|row| row["transferAccountId"] == "actual-wallet-account-1")
+                .unwrap()
+                .clone()
+        } else {
+            rows.last().unwrap().clone()
+        };
+        match collection {
+            "accounts" => {
+                row["id"] = json!("actual-wallet-account-2");
+                row["name"] = json!("Reserve cash");
+                row["clearedBalance"] = money(800, "USD");
+                row["importedBalance"] = money(800, "USD");
+            }
+            "transactions" => {
+                row["id"] = json!("opening-row-2");
+                row["accountId"] = json!("actual-wallet-account-2");
+                row["amount"] = money(800, "USD");
+            }
+            _ => {
+                row["id"] = json!("actual-wallet-transfer-payee-2");
+                row["name"] = json!("Reserve cash");
+                row["transferAccountId"] = json!("actual-wallet-account-2");
+            }
+        }
+        rows.push(row);
+    }
+    assert_eq!(
+        verify(verify_request(planned, after, "postconditions"))["valid"],
+        true
+    );
+}
+
+#[test]
+fn nonzero_opening_selects_exact_native_boundary_among_other_valid_boundaries() {
+    let mut input = wallet_opening_request();
+    let entries = input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap();
+    let mut after = entries.last().unwrap().clone();
+    after["walletBalanceAnchor"]["boundary"] = json!("after_day_activity");
+    after["walletBalanceAnchor"]["asOfDate"] = json!("2026-09-02");
+    entries.push(after);
+    let duplicate = entries[entries.len() - 2].clone();
+    entries.push(duplicate);
+    assert!(plan_request(input).is_ok());
 }

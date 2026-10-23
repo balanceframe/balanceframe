@@ -1,0 +1,79 @@
+{
+  "contractVersion": "1",
+  "resolutionHash": "f29d68806e409500f4a1da25706aae7a89da0dd4165769216a0ec61b17a32349",
+  "allocationHash": "df743d6699e3f8f087eefad71eacfdfba9df030b2763d494b73298b23bfa0772",
+  "eventId": "event:1eda69c01eee96c0f0f58f0f5260d60f2c1f9fe7e81c4ea33f891c97d0c95203",
+  "targetObservationId": "bank-1",
+  "ledgerTransactionId": "actual-bank-1",
+  "evidenceIds": ["doc-bank", "doc-receipt-1", "doc-receipt-2"],
+  "sources": [
+    {
+      "documentId": "doc-bank",
+      "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "parserVersion": "actual-v1",
+      "sourceTimestamp": "2026-10-16T12:00:00Z",
+      "receivedAt": "2026-10-16T12:01:00Z"
+    },
+    {
+      "documentId": "doc-receipt-1",
+      "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "parserVersion": "wallet-v1",
+      "sourceTimestamp": "2026-10-15T12:00:00Z",
+      "receivedAt": "2026-10-15T12:01:00Z"
+    },
+    {
+      "documentId": "doc-receipt-2",
+      "contentHash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "parserVersion": "wallet-v1",
+      "sourceTimestamp": "2026-10-15T12:00:00Z",
+      "receivedAt": "2026-10-15T12:01:00Z"
+    }
+  ],
+  "contributions": [
+    {
+      "receiptId": "receipt-1",
+      "lineId": "line-1",
+      "categoryId": "food",
+      "amount": {
+        "minorUnits": "400",
+        "currency": "USD"
+      }
+    },
+    {
+      "receiptId": "receipt-2",
+      "lineId": "line-2",
+      "categoryId": "household",
+      "amount": {
+        "minorUnits": "800",
+        "currency": "USD"
+      }
+    }
+  ],
+  "ledgerEffect": {
+    "accountId": "checking",
+    "amount": {
+      "minorUnits": "-1200",
+      "currency": "USD"
+    },
+    "date": "2026-10-16",
+    "categoryId": null,
+    "payeeName": null,
+    "notes": null,
+    "splits": [
+      {
+        "categoryId": "food",
+        "amount": {
+          "minorUnits": "-400",
+          "currency": "USD"
+        }
+      },
+      {
+        "categoryId": "household",
+        "amount": {
+          "minorUnits": "-800",
+          "currency": "USD"
+        }
+      }
+    ]
+  }
+}

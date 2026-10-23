@@ -248,6 +248,16 @@ export interface ManualTransactionInput {
   splits?: ManualTransactionSplit[];
 }
 /** Current selected budget and acquired execution authority for a manual write. */
+export interface EvidenceTransactionSource {
+  budgetId: string;
+  accountId: string;
+  transactionId: string;
+  fingerprint: string;
+  parent: Record<string, unknown>;
+  children: Record<string, unknown>[];
+  transaction: Transaction;
+}
+
 export interface ManualTransactionPrecondition {
   readonly budgetId: string;
   readonly assertExecutionCurrent: () => void;
@@ -281,6 +291,19 @@ export interface WalletAccountInput {
   readonly walletId: string;
   readonly accountName: string;
   readonly currency: string;
+  readonly opening?: { readonly amount: number; readonly date: string };
+}
+
+export interface WalletOpeningEquity {
+  readonly walletId: string;
+  readonly accountId: LedgerId;
+  readonly transactionId: LedgerId;
+  readonly date: string;
+  readonly amount: { readonly minorUnits: string; readonly currency: string };
+  readonly startingBalance: true;
+  readonly sdkFingerprint: string;
+  readonly payeeId: string | null;
+  readonly categoryId: string | null;
 }
 
 export interface WalletAccountPrecondition {
@@ -289,7 +312,7 @@ export interface WalletAccountPrecondition {
 }
 
 export type WalletAccountResult =
-  | { success: true; walletId: string; accountId: LedgerId; verified: true }
+  | { success: true; walletId: string; accountId: LedgerId; verified: true; openingEquity?: WalletOpeningEquity }
   | {
       success: false;
       code:
@@ -300,6 +323,8 @@ export type WalletAccountResult =
         | 'WRITE_UNCERTAIN';
       error: string;
       reviewRequired?: true;
+      createdAccount?: { readonly walletId: string; readonly accountId: LedgerId; readonly verified: true };
+      openingExpected?: WalletOpeningEquity;
     };
 
 export interface LedgerTransferInput {
@@ -341,6 +366,7 @@ export type LedgerTransferResult =
     };
 
 export type ManualTransactionErrorCode =
+  | 'SOURCE_PRECONDITION_FAILED'
   | 'BUDGET_PRECONDITION_FAILED'
   | 'INVALID_INPUT'
   | 'AMOUNT_OUT_OF_RANGE'
@@ -586,6 +612,27 @@ export interface BudgetLedger {
     input: ManualTransactionInput,
     precondition: ManualTransactionPrecondition,
   ): Promise<ManualTransactionResult>;
+
+  /** Positive evidence credit creation; caller must hold the ordinary acquired consequential-action fence. */
+  verifyEvidenceAmendment(input: {
+    expected: EvidenceTransactionSource;
+    transaction: ManualTransactionInput;
+  }): Promise<boolean>;
+  captureEvidenceTransaction(input: {
+    budgetId: string;
+    accountId: string;
+    transactionId: string;
+  }): Promise<EvidenceTransactionSource>;
+  amendEvidenceTransaction(
+    input: { expected: EvidenceTransactionSource; transaction: ManualTransactionInput },
+    precondition: ManualTransactionPrecondition,
+  ): Promise<ManualTransactionResult>;
+  createEvidenceCredit(
+    input: ManualTransactionInput,
+    precondition: ManualTransactionPrecondition,
+  ): Promise<ManualTransactionResult>;
+
+  readWalletOpeningEquity(input: WalletAccountInput, accountId: LedgerId): Promise<WalletOpeningEquity>;
 
   createWalletAccount(
     input: WalletAccountInput,

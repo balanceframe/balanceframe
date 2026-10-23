@@ -445,6 +445,22 @@ describe('authoritative application liquidity service', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
+  it('recomputes evidence inside each consequential capture without mutating the Actual snapshot', async () => {
+    let available = true;
+    let captures = 0;
+    const governed = new LiquidityService({ connectionManager: manager, store, native, clock: () => new Date(clockNow), transactionEvidence: { captureObservations: async (observedActor, config) => {
+      expect(observedActor.actorId).toBe(actor.actorId); expect(config.budgetId).toBe(actor.budgetId); captures += 1;
+      return available ? [{ kind: 'economic_event_resolution', scope: { kind: 'transaction', id: 'event-test' }, state: 'resolved', observedAt: now, contentHash: 'evidence-current', version: '1', ledgerEffect: { accountId: 'checking', amount: money('-100'), date: '2026-09-06', categoryId: null, payeeName: null, notes: null, splits: [] }, evidence: [{ evidenceId: 'evidence-test', kind: 'economic_event_resolution', authorized: true, redaction: 'visible' }] }] : [];
+    } } });
+    const first = await governed.withConsequentialActionCapture(actor, async (capture) => capture.snapshot.observations);
+    expect(first.some((observation) => observation.kind === 'economic_event_resolution')).toBe(true);
+    available = false;
+    const second = await governed.withConsequentialActionCapture(actor, async (capture) => capture.snapshot.observations);
+    expect(second.some((observation) => observation.kind === 'economic_event_resolution')).toBe(false);
+    expect(current.observations.some((observation) => observation.kind === 'economic_event_resolution')).toBe(false);
+    expect(captures).toBe(2);
+  });
+
   async function saveFundedObservations(): Promise<void> {
     current = snapshot(20000, '2026-09-06T10:00:00.000Z', false, 15000);
     await service.saveObservations(actor, {
@@ -2356,7 +2372,7 @@ describe('authoritative application liquidity service', () => {
       authorizedHolderRequired: true,
     });
     expect(aggregateConclusion?.transferConclusion).not.toHaveProperty('estimatedArrival');
-    const encodedConclusion = JSON.stringify(aggregateConclusion);
+    const encodedConclusion = JSON.stringify(aggregateConclusion && { description: aggregateConclusion.description, transferConclusion: aggregateConclusion.transferConclusion });
     const planAccountIds = proposal.plan.legs.flatMap(({ sourceAccountId, destinationAccountId }) => [
       sourceAccountId,
       destinationAccountId,

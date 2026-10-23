@@ -9,6 +9,8 @@ pub mod data_quality;
 pub mod decision;
 pub mod duplicates;
 pub mod envelope;
+pub mod evidence;
+pub use evidence::allocate_evidence_amount;
 pub mod financial_state;
 pub mod freshness;
 pub mod liquidity;

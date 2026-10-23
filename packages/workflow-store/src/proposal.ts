@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   accountSchema,
+  EvidenceAllocationReviewSchema,
   canonicalTransactionSchema,
   categorySchema,
   consequentialActionPlanSchema,
@@ -33,7 +34,10 @@ export const GENERIC_MUTATION_POLICY_VERSION = '1.0';
 type ConsequentialActionAtom = AtomicConsequentialActionIntent;
 export type ConsequentialActionCapabilityPhase = 'propose' | 'approve' | 'execute';
 export const CONSEQUENTIAL_ACTION_CAPABILITY_MAP: Readonly<
-  Record<ConsequentialActionAtom['kind'], Readonly<Record<ConsequentialActionCapabilityPhase, string>>>
+  Record<
+    ConsequentialActionAtom['kind'],
+    Readonly<Record<ConsequentialActionCapabilityPhase, string>>
+  >
 > = {
   reallocation: {
     propose: 'reallocation:propose',
@@ -46,6 +50,16 @@ export const CONSEQUENTIAL_ACTION_CAPABILITY_MAP: Readonly<
     execute: 'transaction:execute',
   },
   evidence_projection: {
+    propose: 'ledger_projection:propose',
+    approve: 'ledger_projection:approve',
+    execute: 'ledger_projection:execute',
+  },
+  evidence_credit: {
+    propose: 'ledger_projection:propose',
+    approve: 'ledger_projection:approve',
+    execute: 'ledger_projection:execute',
+  },
+  evidence_amendment: {
     propose: 'ledger_projection:propose',
     approve: 'ledger_projection:approve',
     execute: 'ledger_projection:execute',
@@ -118,7 +132,10 @@ export function requiredProposalApprovers(result: GovernanceAuthorizationResult)
 
 /** Safe, classified failure from the proposal execution linearization point. */
 export class ProposalAcquisitionError extends Error {
-  constructor(readonly reasonCode: ProposalAcquisitionReasonCode, message: string) {
+  constructor(
+    readonly reasonCode: ProposalAcquisitionReasonCode,
+    message: string,
+  ) {
     super(message);
     this.name = 'ProposalAcquisitionError';
   }
@@ -194,8 +211,13 @@ function proposalText(value: unknown, label: string): string {
 
 function proposalMoney(value: unknown): { minorUnits: string; currency: string } {
   const money = proposalRecord(value);
-  if (!money || typeof money.minorUnits !== 'string' || !/^(0|[1-9]\d*)$/.test(money.minorUnits) ||
-      typeof money.currency !== 'string' || !/^[A-Z]{3}$/.test(money.currency))
+  if (
+    !money ||
+    typeof money.minorUnits !== 'string' ||
+    !/^(0|[1-9]\d*)$/.test(money.minorUnits) ||
+    typeof money.currency !== 'string' ||
+    !/^[A-Z]{3}$/.test(money.currency)
+  )
     throw new Error('Invalid server-derived proposal amount');
   return { minorUnits: money.minorUnits, currency: money.currency };
 }
@@ -215,7 +237,8 @@ function collectProposalResources(
   if (object.resourceKind !== undefined || object.resourceId !== undefined) {
     let kind: string | undefined;
     if (object.resourceKind !== undefined) {
-      if (typeof object.resourceKind !== 'string') throw new Error('Invalid proposal resource kind');
+      if (typeof object.resourceKind !== 'string')
+        throw new Error('Invalid proposal resource kind');
       kind = object.resourceKind;
     } else if (object.kind === 'category') {
       kind = 'category';
@@ -225,19 +248,47 @@ function collectProposalResources(
     if (!kind || VALID_RESOURCE_KINDS[kind] !== true)
       throw new Error('Invalid proposal resource kind');
     const resourceId = proposalText(object.resourceId, `${kind} resource`);
-    resources[`${kind}:${resourceId}`] = { resourceKind: kind as GovernanceResourceKind, resourceId };
+    resources[`${kind}:${resourceId}`] = {
+      resourceKind: kind as GovernanceResourceKind,
+      resourceId,
+    };
   }
   for (const [field, kind] of Object.entries(RESOURCE_FIELDS)) {
     const id = object[field];
-    if (id === undefined || id === null ||
-        (allowEmptyReviewProvenanceCategory && field === 'categoryId' && id === '')) continue;
+    if (
+      id === undefined ||
+      id === null ||
+      (allowEmptyReviewProvenanceCategory && field === 'categoryId' && id === '')
+    )
+      continue;
     const resourceId = proposalText(id, `${kind} resource`);
     resources[`${kind}:${resourceId}`] = { resourceKind: kind, resourceId };
   }
   for (const field of Object.keys(object))
-    collectProposalResources(object[field], resources, preconditionsRoot && field === 'reviewProvenance');
+    collectProposalResources(
+      object[field],
+      resources,
+      preconditionsRoot && field === 'reviewProvenance',
+    );
 }
 
+function collectConsequentialPreconditionResources(
+  preconditions: Record<string, unknown>,
+  resources: Record<string, GovernanceResourceRef>,
+): void {
+  const { allocationReviews, ...ordinary } = preconditions;
+  collectProposalResources(ordinary, resources);
+  if (allocationReviews === undefined) return;
+  if (!Array.isArray(allocationReviews) || allocationReviews.length > 100)
+    throw new Error('Invalid native allocation review context');
+  for (const value of allocationReviews) {
+    const review = EvidenceAllocationReviewSchema.parse(value);
+    // Receipt/line/observation positions belong to the already-bound evidence documents,
+    // rather than the independent PurchaseReceipt workflow resource namespace.
+    for (const line of review.lineCategories)
+      addActionResource(resources, 'category', line.categoryId);
+  }
+}
 /** Native source reads are independent of the proposal's executable future effects. */
 export function deriveProposalSourceReadFacts(
   operation: GenericProposalOperation,
@@ -250,12 +301,21 @@ export function deriveProposalSourceReadFacts(
   if (operation !== 'create_rule') return null;
   const preconditions = proposalRecord(preconditionsValue);
   if (!preconditions) throw new Error('Malformed proposal source envelope');
-  if (!['sourceTransactions', 'sourceAccounts', 'nativeImpact'].some((field) => hasOwnField(preconditions, field)))
+  if (
+    !['sourceTransactions', 'sourceAccounts', 'nativeImpact'].some((field) =>
+      hasOwnField(preconditions, field),
+    )
+  )
     return null; // Legacy proposals have no complete native source snapshot.
 
-  const accounts = accountSchema.extend({
-    clearedBalance: moneySchema.strict(), importedBalance: moneySchema.strict(),
-  }).strict().array().parse(preconditions.sourceAccounts);
+  const accounts = accountSchema
+    .extend({
+      clearedBalance: moneySchema.strict(),
+      importedBalance: moneySchema.strict(),
+    })
+    .strict()
+    .array()
+    .parse(preconditions.sourceAccounts);
   const impact = proposalRecord(preconditions.nativeImpact);
   if (!impact) throw new Error('Missing native source namespaces');
   assertOnlyFields(impact, ['payees', 'categories', 'rules'], 'native source namespaces');
@@ -263,16 +323,28 @@ export function deriveProposalSourceReadFacts(
   const categories = categorySchema.strict().array().parse(impact.categories);
   const rules = ruleSchema.strict().array().parse(impact.rules);
   canonicalTransactionSchema.array().parse(preconditions.sourceTransactions);
-  if (!Array.isArray(preconditions.sourceTransactions)) throw new Error('Missing canonical source transactions');
+  if (!Array.isArray(preconditions.sourceTransactions))
+    throw new Error('Missing canonical source transactions');
 
   const resources: Record<string, GovernanceResourceRef> = {};
-  const required: Record<string, GovernanceResourceRef & { readonly capability: string; readonly visibility: 'resource' }> = {};
-  const add = (kind: GovernanceResourceKind, value: unknown, capabilities: readonly string[]): string => {
+  const required: Record<
+    string,
+    GovernanceResourceRef & { readonly capability: string; readonly visibility: 'resource' }
+  > = {};
+  const add = (
+    kind: GovernanceResourceKind,
+    value: unknown,
+    capabilities: readonly string[],
+  ): string => {
     const resourceId = proposalText(value, `${kind} source resource`);
     const resource = { resourceKind: kind, resourceId };
     resources[`${kind}:${resourceId}`] = resource;
     for (const capability of capabilities)
-      required[`${kind}:${resourceId}:${capability}`] = { ...resource, capability, visibility: 'resource' };
+      required[`${kind}:${resourceId}:${capability}`] = {
+        ...resource,
+        capability,
+        visibility: 'resource',
+      };
     return resourceId;
   };
   add('budget', budgetId, ['observe', 'source', 'rule:view']);
@@ -289,7 +361,8 @@ export function deriveProposalSourceReadFacts(
   const categoryIds = identities(categories);
   const payeeIds = identities(payees);
   identities(rules);
-  for (const account of accounts) add('account', account.id, ['existence', 'history', 'name', 'source']);
+  for (const account of accounts)
+    add('account', account.id, ['existence', 'history', 'name', 'source']);
   for (const category of categories) add('category', category.id, ['existence', 'name']);
   for (const payee of payees)
     if (payee.transferAccountId !== null && !accountIds.has(payee.transferAccountId))
@@ -301,10 +374,28 @@ export function deriveProposalSourceReadFacts(
   const visit = (value: unknown, parent?: { accountId: string; currency: string }): bigint => {
     const transaction = proposalRecord(value);
     if (!transaction) throw new Error('Malformed canonical source transaction');
-    assertOnlyFields(transaction, [
-      'id', 'accountId', 'date', 'payeeId', 'payeeName', 'categoryId', 'categoryName', 'amount',
-      'cleared', 'reconciled', 'importedId', 'importedPayee', 'notes', 'tags', 'transferAccountId', 'subtransactions',
-    ], 'canonical source transaction');
+    assertOnlyFields(
+      transaction,
+      [
+        'id',
+        'accountId',
+        'date',
+        'payeeId',
+        'payeeName',
+        'categoryId',
+        'categoryName',
+        'amount',
+        'cleared',
+        'reconciled',
+        'importedId',
+        'importedPayee',
+        'notes',
+        'tags',
+        'transferAccountId',
+        'subtransactions',
+      ],
+      'canonical source transaction',
+    );
     const transactionId = add('transaction', transaction.id, ['transaction.view', 'source']);
     if (transactionIds.has(transactionId)) throw new Error('Duplicate native source transaction');
     transactionIds.add(transactionId);
@@ -314,25 +405,40 @@ export function deriveProposalSourceReadFacts(
     const signed = BigInt(amount.minorUnits);
     if (parent && (parent.accountId !== accountId || parent.currency !== amount.currency))
       throw new Error('Split source account or currency differs from its parent');
-    const categoryId = transaction.categoryId === null ? null : proposalText(transaction.categoryId, 'source category');
-    if (categoryId !== null && !categoryIds.has(categoryId)) throw new Error('Unknown native source category');
-    if (transaction.payeeId !== null && !payeeIds.has(proposalText(transaction.payeeId, 'source payee')))
+    const categoryId =
+      transaction.categoryId === null
+        ? null
+        : proposalText(transaction.categoryId, 'source category');
+    if (categoryId !== null && !categoryIds.has(categoryId))
+      throw new Error('Unknown native source category');
+    if (
+      transaction.payeeId !== null &&
+      !payeeIds.has(proposalText(transaction.payeeId, 'source payee'))
+    )
       throw new Error('Unknown native source payee');
-    if (transaction.transferAccountId !== null &&
-        !accountIds.has(proposalText(transaction.transferAccountId, 'source transfer account')))
+    if (
+      transaction.transferAccountId !== null &&
+      !accountIds.has(proposalText(transaction.transferAccountId, 'source transfer account'))
+    )
       throw new Error('Unknown native source transfer account');
     const children: unknown = transaction.subtransactions;
     if (!Array.isArray(children)) throw new Error('Malformed native source splits');
     if (children.length > 0) {
       let childAmount = 0n;
-      for (const child of children) childAmount += visit(child, { accountId, currency: amount.currency });
+      for (const child of children)
+        childAmount += visit(child, { accountId, currency: amount.currency });
       if (childAmount !== signed) throw new Error('Split source amounts do not equal their parent');
     } else {
       operations.push({
-        operation: 'merchant:analyze', transactionId, accountId,
+        operation: 'merchant:analyze',
+        transactionId,
+        accountId,
         ...(categoryId === null ? {} : { categoryId }),
         direction: signed < 0n ? 'outgoing' : 'incoming',
-        amount: { minorUnits: (signed < 0n ? -signed : signed).toString(), currency: amount.currency },
+        amount: {
+          minorUnits: (signed < 0n ? -signed : signed).toString(),
+          currency: amount.currency,
+        },
       });
     }
     return signed;
@@ -383,7 +489,10 @@ function normalizedGovernanceOperation(
     if (source[key] !== undefined) result[key] = proposalText(source[key], key);
   }
   if (source.resourceKind !== undefined || source.resourceId !== undefined) {
-    if (typeof source.resourceKind !== 'string' || VALID_RESOURCE_KINDS[source.resourceKind] !== true)
+    if (
+      typeof source.resourceKind !== 'string' ||
+      VALID_RESOURCE_KINDS[source.resourceKind] !== true
+    )
       throw new Error('Invalid proposal resource kind');
     result.resourceKind = source.resourceKind as GovernanceResourceKind;
     result.resourceId = proposalText(source.resourceId, `${result.resourceKind} resource`);
@@ -398,13 +507,31 @@ function requireCompositeArray(composite: Record<string, unknown>, key: string):
 }
 
 type DisclosureRole =
-  | 'unknown' | 'preconditions' | 'payload' | 'composite' | 'account' | 'transaction'
-  | 'simulation' | 'example' | 'operation' | 'reallocation' | 'transfer' | 'leg'
-  | 'accountPrecondition' | 'claim' | 'backing' | 'backingLine' | 'scenario'
-  | 'purchase' | 'projection' | 'evidence';
+  | 'unknown'
+  | 'preconditions'
+  | 'payload'
+  | 'composite'
+  | 'account'
+  | 'transaction'
+  | 'simulation'
+  | 'example'
+  | 'operation'
+  | 'reallocation'
+  | 'transfer'
+  | 'leg'
+  | 'accountPrecondition'
+  | 'claim'
+  | 'backing'
+  | 'backingLine'
+  | 'scenario'
+  | 'purchase'
+  | 'projection'
+  | 'evidence';
 type DisclosureMoneyRole = 'balance' | 'outgoing' | 'directional';
 
-const DISCLOSURE_MONEY_FIELDS: Partial<Record<DisclosureRole, Readonly<Record<string, DisclosureMoneyRole>>>> = {
+const DISCLOSURE_MONEY_FIELDS: Partial<
+  Record<DisclosureRole, Readonly<Record<string, DisclosureMoneyRole>>>
+> = {
   account: { clearedBalance: 'balance', importedBalance: 'balance' },
   transaction: { amount: 'directional' },
   simulation: { projectedBalance: 'balance' },
@@ -412,28 +539,42 @@ const DISCLOSURE_MONEY_FIELDS: Partial<Record<DisclosureRole, Readonly<Record<st
   reallocation: { amount: 'directional' },
   transfer: { minimumAmount: 'balance' },
   leg: { amount: 'outgoing', sourceAfter: 'balance', destinationAfter: 'balance' },
-  accountPrecondition: { recordedBalance: 'balance', signedHeadroom: 'balance', backingCapacity: 'balance' },
+  accountPrecondition: {
+    recordedBalance: 'balance',
+    signedHeadroom: 'balance',
+    backingCapacity: 'balance',
+  },
   claim: { amount: 'directional' },
   backingLine: { amount: 'balance' },
   purchase: { amount: 'outgoing' },
   projection: { amount: 'directional' },
   evidence: { amount: 'directional' },
 };
-const DISCLOSURE_ARRAY_FIELDS: Partial<Record<DisclosureRole, Readonly<Record<string, DisclosureRole>>>> = {
+const DISCLOSURE_ARRAY_FIELDS: Partial<
+  Record<DisclosureRole, Readonly<Record<string, DisclosureRole>>>
+> = {
   preconditions: { sourceAccounts: 'account' },
   simulation: { examples: 'example' },
   composite: {
-    operations: 'operation', reallocations: 'reallocation', transferRecommendations: 'transfer',
-    ledgerProjections: 'projection', evidenceReferences: 'evidence',
+    operations: 'operation',
+    reallocations: 'reallocation',
+    transferRecommendations: 'transfer',
+    ledgerProjections: 'projection',
+    evidenceReferences: 'evidence',
   },
   transfer: { legs: 'leg', reservations: 'claim' },
   backing: { lines: 'backingLine' },
   scenario: { moves: 'reallocation', items: 'purchase' },
 };
-const DISCLOSURE_OBJECT_FIELDS: Partial<Record<DisclosureRole, Readonly<Record<string, DisclosureRole>>>> = {
+const DISCLOSURE_OBJECT_FIELDS: Partial<
+  Record<DisclosureRole, Readonly<Record<string, DisclosureRole>>>
+> = {
   preconditions: {
-    transaction: 'transaction', actualTransaction: 'transaction', transactionFacts: 'transaction',
-    reviewedSimulation: 'simulation', simulation: 'simulation',
+    transaction: 'transaction',
+    actualTransaction: 'transaction',
+    transactionFacts: 'transaction',
+    reviewedSimulation: 'simulation',
+    simulation: 'simulation',
   },
   payload: { composite: 'composite' },
   transfer: { backingAfter: 'backing', scenario: 'scenario' },
@@ -459,22 +600,32 @@ export function deriveProposalDisclosureTotals(
   let operationCount = 0;
   const grossOutgoing: Record<string, bigint> = {};
   const sourceTransactions = new Map<string, Record<string, unknown>>();
-  const baseTransaction = proposalRecord(preconditions.transaction) ??
-    proposalRecord(preconditions.actualTransaction) ?? proposalRecord(preconditions.transactionFacts) ?? preconditions;
+  const baseTransaction =
+    proposalRecord(preconditions.transaction) ??
+    proposalRecord(preconditions.actualTransaction) ??
+    proposalRecord(preconditions.transactionFacts) ??
+    preconditions;
 
   const countMoney = (value: unknown, outgoing: boolean, signedLedger = false): bigint => {
     const money = proposalRecord(value);
-    if (!money || Object.keys(money).length !== 2 ||
-        typeof money.minorUnits !== 'string' || !/^(?:0|-?[1-9]\d*)$/.test(money.minorUnits) ||
-        typeof money.currency !== 'string' || !/^[A-Z]{3}$/.test(money.currency))
+    if (
+      !money ||
+      Object.keys(money).length !== 2 ||
+      typeof money.minorUnits !== 'string' ||
+      !/^(?:0|-?[1-9]\d*)$/.test(money.minorUnits) ||
+      typeof money.currency !== 'string' ||
+      !/^[A-Z]{3}$/.test(money.currency)
+    )
       throw new Error('Malformed proposal disclosure Money');
     const minor = BigInt(money.minorUnits);
-    if (minor < -maxMinor - 1n || minor > maxMinor || outgoing && !signedLedger && minor < 0n)
+    if (minor < -maxMinor - 1n || minor > maxMinor || (outgoing && !signedLedger && minor < 0n))
       throw new Error('Proposal disclosure Money exceeds its ledger role');
     operationCount += 1;
-    if (!Number.isSafeInteger(operationCount)) throw new Error('Proposal disclosure count overflow');
+    if (!Number.isSafeInteger(operationCount))
+      throw new Error('Proposal disclosure count overflow');
     if (outgoing) {
-      const gross = (grossOutgoing[money.currency] ?? 0n) + (signedLedger && minor < 0n ? -minor : minor);
+      const gross =
+        (grossOutgoing[money.currency] ?? 0n) + (signedLedger && minor < 0n ? -minor : minor);
       if (gross > maxMinor) throw new Error('Proposal disclosure gross outgoing overflow');
       grossOutgoing[money.currency] = gross;
     }
@@ -487,12 +638,15 @@ export function deriveProposalDisclosureTotals(
       throw new Error('Malformed proposal disclosure canonical transaction');
     const id = proposalText(transaction.id, 'disclosed source transaction');
     if (source) {
-      if (sourceTransactions.has(id)) throw new Error('Duplicate proposal disclosure source transaction');
+      if (sourceTransactions.has(id))
+        throw new Error('Duplicate proposal disclosure source transaction');
       sourceTransactions.set(id, transaction);
     }
     const amount = proposalRecord(transaction.amount);
-    const isOutgoingLeaf = transaction.subtransactions.length === 0 &&
-      typeof amount?.minorUnits === 'string' && amount.minorUnits.startsWith('-');
+    const isOutgoingLeaf =
+      transaction.subtransactions.length === 0 &&
+      typeof amount?.minorUnits === 'string' &&
+      amount.minorUnits.startsWith('-');
     countMoney(transaction.amount, isOutgoingLeaf, true);
     for (const child of transaction.subtransactions) visitCanonicalTransaction(child, source);
     for (const field of Object.keys(transaction))
@@ -500,7 +654,8 @@ export function deriveProposalDisclosureTotals(
   };
 
   const visitArray = (value: unknown, role: DisclosureRole): void => {
-    if (!Array.isArray(value)) throw new Error('Malformed proposal disclosure financial collection');
+    if (!Array.isArray(value))
+      throw new Error('Malformed proposal disclosure financial collection');
     for (const row of value) visit(row, role);
   };
 
@@ -517,60 +672,104 @@ export function deriveProposalDisclosureTotals(
     }
     if (hasOwnField(record, 'minorUnits') || hasOwnField(record, 'currency'))
       throw new Error('Unknown proposal disclosure Money role');
-    if (role === 'transaction' && operation === 'create_rule' && hasOwnField(record, 'subtransactions')) {
+    if (
+      role === 'transaction' &&
+      operation === 'create_rule' &&
+      hasOwnField(record, 'subtransactions')
+    ) {
       visitCanonicalTransaction(record, false);
       return;
     }
     if (role === 'example') {
-      const source = sourceTransactions.get(proposalText(record.txId, 'simulation example transaction'));
+      const source = sourceTransactions.get(
+        proposalText(record.txId, 'simulation example transaction'),
+      );
       const amount = proposalRecord(record.amount);
       const sourceAmount = proposalRecord(source?.amount);
-      if (!source || !Array.isArray(source.subtransactions) || source.subtransactions.length !== 0 ||
-          !amount || !sourceAmount || amount.minorUnits !== sourceAmount.minorUnits ||
-          amount.currency !== sourceAmount.currency)
+      if (
+        !source ||
+        !Array.isArray(source.subtransactions) ||
+        source.subtransactions.length !== 0 ||
+        !amount ||
+        !sourceAmount ||
+        amount.minorUnits !== sourceAmount.minorUnits ||
+        amount.currency !== sourceAmount.currency
+      )
         throw new Error('Simulation example Money differs from its source transaction');
-      countMoney(record.amount, typeof amount.minorUnits === 'string' && amount.minorUnits.startsWith('-'), true);
+      countMoney(
+        record.amount,
+        typeof amount.minorUnits === 'string' && amount.minorUnits.startsWith('-'),
+        true,
+      );
     }
-    if (role === 'account' && (!hasOwnField(record, 'clearedBalance') || !hasOwnField(record, 'importedBalance')))
+    if (
+      role === 'account' &&
+      (!hasOwnField(record, 'clearedBalance') || !hasOwnField(record, 'importedBalance'))
+    )
       throw new Error('Missing proposal disclosure account balances');
     if (role === 'operation' && record.operation !== operation)
       throw new Error('Unknown proposal disclosure executable operation');
     if (role === 'composite')
       for (const field of Object.keys(DISCLOSURE_ARRAY_FIELDS.composite!))
-        if (!hasOwnField(record, field)) throw new Error('Incomplete proposal disclosure composite');
+        if (!hasOwnField(record, field))
+          throw new Error('Incomplete proposal disclosure composite');
     if (role === 'transfer' && (!Array.isArray(record.legs) || record.legs.length === 0))
       throw new Error('Missing proposal disclosure transfer legs');
-    if ((role === 'reallocation' || role === 'leg' || role === 'claim' || role === 'purchase' ||
-        role === 'transaction' || role === 'projection' ||
-        role === 'operation' && record.direction !== undefined) && !hasOwnField(record, 'amount'))
+    if (
+      (role === 'reallocation' ||
+        role === 'leg' ||
+        role === 'claim' ||
+        role === 'purchase' ||
+        role === 'transaction' ||
+        role === 'projection' ||
+        (role === 'operation' && record.direction !== undefined)) &&
+      !hasOwnField(record, 'amount')
+    )
       throw new Error('Missing proposal disclosure financial amount');
-    if (role === 'claim' && record.kind !== 'category' && record.kind !== 'account_debit' &&
-        record.kind !== 'destination_hold')
+    if (
+      role === 'claim' &&
+      record.kind !== 'category' &&
+      record.kind !== 'account_debit' &&
+      record.kind !== 'destination_hold'
+    )
       throw new Error('Unknown proposal disclosure claim effect');
     if (role === 'evidence' && hasOwnField(record, 'amount') && record.kind !== 'receipt')
       throw new Error('Unknown proposal disclosure monetary evidence');
-    if (role === 'scenario' &&
-        (hasOwnField(record, 'moves') && record.kind !== 'reallocation' ||
-         hasOwnField(record, 'items') && record.kind !== 'purchases'))
+    if (
+      role === 'scenario' &&
+      ((hasOwnField(record, 'moves') && record.kind !== 'reallocation') ||
+        (hasOwnField(record, 'items') && record.kind !== 'purchases'))
+    )
       throw new Error('Unknown proposal disclosure scenario financial role');
 
-    const moneyFields = role === 'preconditions' && operation === 'set_category' && baseTransaction === record
-      ? DISCLOSURE_MONEY_FIELDS.transaction : DISCLOSURE_MONEY_FIELDS[role];
+    const moneyFields =
+      role === 'preconditions' && operation === 'set_category' && baseTransaction === record
+        ? DISCLOSURE_MONEY_FIELDS.transaction
+        : DISCLOSURE_MONEY_FIELDS[role];
     const arrayFields = DISCLOSURE_ARRAY_FIELDS[role];
     const objectFields = DISCLOSURE_OBJECT_FIELDS[role];
     for (const field of Object.keys(record)) {
-      if (role === 'preconditions' && field === 'sourceTransactions' ||
-          role === 'example' && field === 'amount') continue;
-      const moneyRole = moneyFields && hasOwnField(moneyFields, field) ? moneyFields[field] : undefined;
+      if (
+        (role === 'preconditions' && field === 'sourceTransactions') ||
+        (role === 'example' && field === 'amount')
+      )
+        continue;
+      const moneyRole =
+        moneyFields && hasOwnField(moneyFields, field) ? moneyFields[field] : undefined;
       if (moneyRole) {
-        if (role === 'simulation' && field === 'projectedBalance' && record[field] === null) continue;
+        if (role === 'simulation' && field === 'projectedBalance' && record[field] === null)
+          continue;
         let outgoing = moneyRole === 'outgoing';
         if (moneyRole === 'directional') {
-          const direction = record.direction ??
-            (role === 'reallocation' || role === 'evidence' || role === 'claim' ? 'outgoing' :
-              role === 'projection' && record.transactionId !== undefined &&
-                record.transactionId === (baseTransaction.id ?? baseTransaction.transactionId)
-                ? baseTransaction.direction : undefined);
+          const direction =
+            record.direction ??
+            (role === 'reallocation' || role === 'evidence' || role === 'claim'
+              ? 'outgoing'
+              : role === 'projection' &&
+                  record.transactionId !== undefined &&
+                  record.transactionId === (baseTransaction.id ?? baseTransaction.transactionId)
+                ? baseTransaction.direction
+                : undefined);
           if (direction !== 'incoming' && direction !== 'outgoing')
             throw new Error('Unknown proposal disclosure amount direction');
           outgoing = direction === 'outgoing';
@@ -584,7 +783,8 @@ export function deriveProposalDisclosureTotals(
       } else if (objectFields && hasOwnField(objectFields, field)) {
         visit(record[field], objectFields[field]!);
       } else {
-        if (field === 'amount') throw new Error('Unknown proposal disclosure financial amount role');
+        if (field === 'amount')
+          throw new Error('Unknown proposal disclosure financial amount role');
         visit(record[field], 'unknown');
       }
     }
@@ -593,20 +793,23 @@ export function deriveProposalDisclosureTotals(
   if (hasOwnField(preconditions, 'sourceTransactions')) {
     if (!Array.isArray(preconditions.sourceTransactions))
       throw new Error('Malformed proposal disclosure source transactions');
-    for (const transaction of preconditions.sourceTransactions) visitCanonicalTransaction(transaction, true);
+    for (const transaction of preconditions.sourceTransactions)
+      visitCanonicalTransaction(transaction, true);
   }
   visit(preconditions, 'preconditions');
   if (projection === 'envelope' || projection === 'detail') {
     const payload = proposalRecord(payloadValue);
-    if (!payload || payload.kind !== operation) throw new Error('Malformed proposal disclosure payload');
+    if (!payload || payload.kind !== operation)
+      throw new Error('Malformed proposal disclosure payload');
     visit(payload, 'payload');
   } else if (projection !== 'preconditions') {
     throw new Error('Unknown proposal disclosure projection');
   }
   if (projection === 'detail') {
-    const simulation = operation === 'create_rule'
-      ? preconditions.reviewedSimulation ?? preconditions.simulation
-      : preconditions.simulation;
+    const simulation =
+      operation === 'create_rule'
+        ? (preconditions.reviewedSimulation ?? preconditions.simulation)
+        : preconditions.simulation;
     if (simulation !== undefined && simulation !== null) visit(simulation, 'simulation');
   }
   return { operationCount, grossOutgoing };
@@ -615,7 +818,14 @@ export function deriveProposalDisclosureTotals(
 type RuleLifecycleOperation = 'update_rule' | 'delete_rule';
 
 const RULE_SNAPSHOT_FIELDS = [
-  'id', 'name', 'order', 'trigger', 'actions', 'inactive', 'stage', 'conditionsOp',
+  'id',
+  'name',
+  'order',
+  'trigger',
+  'actions',
+  'inactive',
+  'stage',
+  'conditionsOp',
 ];
 const RULE_OVERRIDE_FIELDS = ['ruleId', 'inactive', 'version'];
 const RULE_LIFECYCLE_PAYLOAD_FIELDS: Record<RuleLifecycleOperation, readonly string[]> = {
@@ -637,12 +847,15 @@ function hasOwnField(record: Record<string, unknown>, field: string): boolean {
 }
 export function consequentialActionPlanFromPayload(payloadValue: unknown): ConsequentialActionPlan {
   const payload = proposalRecord(payloadValue);
-  if (!payload || payload.kind !== 'consequential_action') throw new Error('Malformed consequential-action payload');
+  if (!payload || payload.kind !== 'consequential_action')
+    throw new Error('Malformed consequential-action payload');
   assertOnlyFields(payload, ['kind', 'plan'], 'consequential-action payload');
   return consequentialActionPlanSchema.parse(payload.plan);
 }
 
-function consequentialActionAtoms(plan: ConsequentialActionPlan): readonly ConsequentialActionAtom[] {
+function consequentialActionAtoms(
+  plan: ConsequentialActionPlan,
+): readonly ConsequentialActionAtom[] {
   return plan.action.kind === 'composite' ? plan.action.actions : [plan.action];
 }
 
@@ -651,14 +864,20 @@ export function validateConsequentialActionPreconditions(
   preconditionsValue: unknown,
 ): Record<string, unknown> {
   const preconditions = proposalRecord(preconditionsValue);
-  if (!preconditions || preconditions.nativeActionHash !== plan.actionHash ||
-      canonicalProposalJson(preconditions.nativeSource) !== canonicalProposalJson(plan.source))
+  if (
+    !preconditions ||
+    preconditions.nativeActionHash !== plan.actionHash ||
+    canonicalProposalJson(preconditions.nativeSource) !== canonicalProposalJson(plan.source)
+  )
     throw new Error('Native action source does not match its exact proposal preconditions');
   proposalText(preconditions.decisionCardPolicyHash, 'decision-card policy hash');
   const financialPolicy = proposalRecord(preconditions.financialApprovalPolicy);
-  if (!financialPolicy ||
-      financialPolicy.version !== plan.source.financialPolicyVersion ||
-      typeof financialPolicy.policyHash !== 'string' || !financialPolicy.policyHash.trim())
+  if (
+    !financialPolicy ||
+    financialPolicy.version !== plan.source.financialPolicyVersion ||
+    typeof financialPolicy.policyHash !== 'string' ||
+    !financialPolicy.policyHash.trim()
+  )
     throw new Error('Financial approval policy does not match native action source');
   return preconditions;
 }
@@ -686,13 +905,25 @@ export function consequentialActionAtomResources(
       }
       break;
     case 'manual_transaction':
+    case 'evidence_credit':
+    case 'evidence_amendment':
     case 'evidence_projection': {
       const transaction = atom.transaction;
+      if (atom.kind === 'evidence_amendment') {
+        const original = (row: typeof atom.expectedSource): void => {
+          addActionResource(resources, 'transaction', row.id);
+          addActionResource(resources, 'account', row.accountId);
+          if (row.categoryId) addActionResource(resources, 'category', row.categoryId);
+          for (const child of row.subtransactions) original(child);
+        };
+        original(atom.expectedSource);
+      }
       addActionResource(resources, 'account', transaction.accountId);
       addActionResource(resources, 'transaction', transaction.parentId);
       if (transaction.categoryId !== null)
         addActionResource(resources, 'category', transaction.categoryId);
-      for (const split of transaction.splits) addActionResource(resources, 'category', split.categoryId);
+      for (const split of transaction.splits)
+        addActionResource(resources, 'category', split.categoryId);
       break;
     }
     case 'wallet_materialization':
@@ -716,19 +947,38 @@ export function consequentialActionPhaseRequirements(
   for (const atom of consequentialActionAtoms(plan)) {
     const capability = CONSEQUENTIAL_ACTION_CAPABILITY_MAP[atom.kind][phase];
     for (const resource of consequentialActionAtomResources(atom, budgetId))
-      required[`${resource.resourceKind}:${resource.resourceId}:${capability}`] = { ...resource, capability };
+      required[`${resource.resourceKind}:${resource.resourceId}:${capability}`] = {
+        ...resource,
+        capability,
+      };
   }
   return Object.values(required);
 }
 
-export function consequentialActionResources(plan: ConsequentialActionPlan): readonly GovernanceResourceRef[] {
+export function consequentialActionResources(
+  plan: ConsequentialActionPlan,
+): readonly GovernanceResourceRef[] {
   const resources: Record<string, GovernanceResourceRef> = {};
   for (const atom of consequentialActionAtoms(plan))
     for (const resource of consequentialActionAtomResources(atom))
       resources[`${resource.resourceKind}:${resource.resourceId}`] = resource;
   for (const reference of plan.evidenceReferences) {
     addActionResource(resources, 'evidence', reference.evidenceId);
-    addActionResource(resources, 'evidence', reference.subjectId);
+    const settlement = consequentialActionAtoms(plan).some(
+      (atom) =>
+        atom.kind === 'evidence_amendment' && atom.expected.parentId === reference.subjectId,
+    );
+    const wallet = consequentialActionAtoms(plan).some(
+      (atom) =>
+        atom.kind === 'wallet_materialization' &&
+        atom.walletId === reference.subjectId &&
+        atom.opening !== undefined,
+    );
+    addActionResource(
+      resources,
+      settlement ? 'transaction' : wallet ? 'wallet' : 'evidence',
+      reference.subjectId,
+    );
   }
   for (const postcondition of plan.expectedPostconditions) {
     switch (postcondition.kind) {
@@ -743,9 +993,11 @@ export function consequentialActionResources(plan: ConsequentialActionPlan): rea
         addActionResource(resources, 'account', postcondition.accountId);
         if (postcondition.categoryId !== null)
           addActionResource(resources, 'category', postcondition.categoryId);
-        for (const split of postcondition.splits) addActionResource(resources, 'category', split.categoryId);
+        for (const split of postcondition.splits)
+          addActionResource(resources, 'category', split.categoryId);
         break;
       case 'wallet_mapping':
+      case 'wallet_opening_equity':
         addActionResource(resources, 'wallet', postcondition.walletId);
         break;
       case 'transfer_ledger_entry':
@@ -757,7 +1009,10 @@ export function consequentialActionResources(plan: ConsequentialActionPlan): rea
   }
   return Object.values(resources);
 }
-function actionMoney(value: unknown): { amount: { minorUnits: string; currency: string }; direction: 'incoming' | 'outgoing' } {
+function actionMoney(value: unknown): {
+  amount: { minorUnits: string; currency: string };
+  direction: 'incoming' | 'outgoing';
+} {
   const money = moneySchema.strict().parse(value);
   const minor = BigInt(money.minorUnits);
   return {
@@ -783,6 +1038,8 @@ function consequentialActionOperations(plan: ConsequentialActionPlan): Governanc
         }
         break;
       case 'manual_transaction':
+      case 'evidence_credit':
+      case 'evidence_amendment':
       case 'evidence_projection': {
         const transaction = atom.transaction;
         const money = actionMoney(transaction.amount);
@@ -807,6 +1064,7 @@ function consequentialActionOperations(plan: ConsequentialActionPlan): Governanc
       case 'wallet_materialization':
         operations.push({
           operation: 'wallet_materialization',
+          ...(atom.opening ? { direction: 'incoming' as const, amount: atom.opening.amount } : {}),
           resourceKind: 'wallet',
           resourceId: atom.walletId,
         });
@@ -835,15 +1093,18 @@ function deriveConsequentialActionSourceReadFacts(
   const plan = consequentialActionPlanFromPayload(payloadValue);
   const preconditions = validateConsequentialActionPreconditions(plan, preconditionsValue);
   const resources: Record<string, GovernanceResourceRef> = {};
-  collectProposalResources(preconditions, resources);
+  collectConsequentialPreconditionResources(preconditions, resources);
   for (const resource of consequentialActionResources(plan))
     resources[`${resource.resourceKind}:${resource.resourceId}`] = resource;
   addActionResource(resources, 'budget', budgetId);
 
-  const required: Record<string, GovernanceResourceRef & {
-    readonly capability: string;
-    readonly visibility: 'resource';
-  }> = {};
+  const required: Record<
+    string,
+    GovernanceResourceRef & {
+      readonly capability: string;
+      readonly visibility: 'resource';
+    }
+  > = {};
   const capabilities: Record<GovernanceResourceKind, readonly string[]> = {
     space: ['existence'],
     budget: ['observe', 'source'],
@@ -893,9 +1154,14 @@ export function consequentialActionStableIdentity(
       };
     case 'manual_transaction':
       return { parentId: atom.transaction.parentId };
+    case 'evidence_credit':
+    case 'evidence_amendment':
     case 'evidence_projection':
       return {
         parentId: atom.transaction.parentId,
+        ...(atom.resolutionSubjectId === undefined
+          ? {}
+          : { resolutionSubjectId: atom.resolutionSubjectId }),
         evidenceIds: [...atom.evidenceIds],
         economicEffect: {
           accountId: atom.transaction.accountId,
@@ -916,9 +1182,10 @@ export function consequentialActionHoldKeys(
   plan: ConsequentialActionPlan,
   sourceLedgerNamespace: string,
 ): readonly string[] {
-  if (!sourceLedgerNamespace.trim()) throw new Error('Missing consequential-action ledger namespace');
+  if (!sourceLedgerNamespace.trim())
+    throw new Error('Missing consequential-action ledger namespace');
   const keys = new Set<string>();
-  const evidenceById = new Map(plan.evidenceReferences.map((reference) => [reference.evidenceId, reference]));
+
   const categoryMonth = (categoryId: string, month: string) =>
     keys.add(`category-month:${categoryId}:${month}`);
   for (const atom of consequentialActionAtoms(plan)) {
@@ -937,6 +1204,8 @@ export function consequentialActionHoldKeys(
         ])
           categoryMonth(categoryId, atom.transaction.date.slice(0, 7));
         break;
+      case 'evidence_credit':
+      case 'evidence_amendment':
       case 'evidence_projection': {
         const transaction = atom.transaction;
         keys.add(`transaction-parent:${transaction.parentId}`);
@@ -946,12 +1215,20 @@ export function consequentialActionHoldKeys(
         ])
           categoryMonth(categoryId, transaction.date.slice(0, 7));
         for (const evidenceId of atom.evidenceIds) {
-          const reference = evidenceById.get(evidenceId);
+          const references = plan.evidenceReferences.filter(
+            (reference) =>
+              reference.evidenceId === evidenceId &&
+              (atom.resolutionSubjectId === undefined ||
+                reference.subjectId === atom.resolutionSubjectId),
+          );
+          const reference = references.length === 1 ? references[0] : undefined;
           if (!reference) throw new Error('Evidence projection lacks its exact native reference');
-          keys.add(`evidence-effect:${canonicalProposalJson({
-            sourceLedgerNamespace,
-            subjectId: reference.subjectId,
-          })}`);
+          keys.add(
+            `evidence-effect:${canonicalProposalJson({
+              sourceLedgerNamespace,
+              subjectId: reference.subjectId,
+            })}`,
+          );
         }
         break;
       }
@@ -997,11 +1274,12 @@ function consequentialActionDisclosureTotals(
     const plan = consequentialActionPlanFromPayload(payloadValue);
     validateConsequentialActionPreconditions(plan, preconditions);
     operationCount += countMoneyOccurrences(plan);
-    if (!Number.isSafeInteger(operationCount)) throw new Error('Proposal disclosure count overflow');
+    if (!Number.isSafeInteger(operationCount))
+      throw new Error('Proposal disclosure count overflow');
     const addOutgoing = (value: unknown, signed: boolean): void => {
       const money = moneySchema.strict().parse(value);
       const minor = BigInt(money.minorUnits);
-      const outgoing = signed ? minor < 0n ? -minor : 0n : minor;
+      const outgoing = signed ? (minor < 0n ? -minor : 0n) : minor;
       if (outgoing < 0n || outgoing > 9223372036854775807n)
         throw new Error('Proposal disclosure gross outgoing overflow');
       const gross = (grossOutgoing[money.currency] ?? 0n) + outgoing;
@@ -1015,6 +1293,8 @@ function consequentialActionDisclosureTotals(
           for (const assignment of atom.assignments) addOutgoing(assignment.amount, false);
           break;
         case 'manual_transaction':
+        case 'evidence_credit':
+        case 'evidence_amendment':
         case 'evidence_projection':
           addOutgoing(atom.transaction.amount, true);
           break;
@@ -1108,8 +1388,7 @@ function collectActualRuleResources(
       continue;
     }
     if (op === 'oneOf' || op === 'notOneOf') {
-      if (!Array.isArray(condition.value))
-        throw new Error(`Malformed ${field} rule resource list`);
+      if (!Array.isArray(condition.value)) throw new Error(`Malformed ${field} rule resource list`);
       for (const id of condition.value) addRuleResource(resources, field, id);
       continue;
     }
@@ -1118,11 +1397,9 @@ function collectActualRuleResources(
 
   for (const value of rule.actions as unknown[]) {
     const action = proposalRecord(value);
-    if (!action || typeof action.op !== 'string')
-      throw new Error('Malformed Actual rule action');
+    if (!action || typeof action.op !== 'string') throw new Error('Malformed Actual rule action');
     if (action.field !== 'account' && action.field !== 'category') continue;
-    if (action.op !== 'set')
-      throw new Error(`Unsupported Actual ${action.field} rule action`);
+    if (action.op !== 'set') throw new Error(`Unsupported Actual ${action.field} rule action`);
     if (action.field === 'category' && action.value === null) continue;
     addRuleResource(resources, action.field, action.value);
   }
@@ -1130,8 +1407,7 @@ function collectActualRuleResources(
 }
 
 function actualRuleAccountScope(rule: Record<string, unknown>): GovernanceAccountScope {
-  if (rule.conditionsOp !== 'and' || !Array.isArray(rule.trigger))
-    return { kind: 'global' };
+  if (rule.conditionsOp !== 'and' || !Array.isArray(rule.trigger)) return { kind: 'global' };
   const accountIds = new Set<string>();
   let accountPredicates = 0;
   for (const value of rule.trigger) {
@@ -1145,15 +1421,18 @@ function actualRuleAccountScope(rule: Record<string, unknown>): GovernanceAccoun
         continue;
       }
       if (condition.op === 'oneOf' && Array.isArray(condition.value)) {
-        for (const id of condition.value)
-          accountIds.add(proposalText(id, 'account resource'));
+        for (const id of condition.value) accountIds.add(proposalText(id, 'account resource'));
         accountPredicates++;
         continue;
       }
       return { kind: 'global' };
     }
-    if (condition.field === 'payee_name' && condition.op === 'is' &&
-        typeof condition.value === 'string' && condition.value.trim())
+    if (
+      condition.field === 'payee_name' &&
+      condition.op === 'is' &&
+      typeof condition.value === 'string' &&
+      condition.value.trim()
+    )
       continue;
     if (condition.field === 'category' || condition.field === 'category_group') continue;
     return { kind: 'global' };
@@ -1181,13 +1460,15 @@ function addCategoryGroupMembers(
   const members = proposalRecord(preconditions.categoryGroupMembers);
   if (!members) throw new Error('Missing current category-group member closure');
   const memberGroups = Object.keys(members);
-  if (memberGroups.length !== categoryGroups.size || memberGroups.some((id) => !categoryGroups.has(id)))
+  if (
+    memberGroups.length !== categoryGroups.size ||
+    memberGroups.some((id) => !categoryGroups.has(id))
+  )
     throw new Error('Incomplete category-group member closure');
 
   for (const groupId of categoryGroups) {
     const categories = members[groupId];
-    if (!Array.isArray(categories))
-      throw new Error('Missing current category-group members');
+    if (!Array.isArray(categories)) throw new Error('Missing current category-group members');
     const uniqueCategories = new Set<string>();
     for (const categoryValue of categories) {
       const categoryId = proposalText(categoryValue, 'category group member resource');
@@ -1224,14 +1505,12 @@ function deriveRuleLifecycleOperation(
   }
   if (proposalText(rule.id, 'rule ID') !== ruleId)
     throw new Error('Current rule snapshot ID does not match the target rule');
-  if (typeof rule.name !== 'string')
-    throw new Error('Invalid current rule name');
+  if (typeof rule.name !== 'string') throw new Error('Invalid current rule name');
   if (typeof rule.order !== 'number' || !Number.isSafeInteger(rule.order) || rule.order < 0)
     throw new Error('Invalid current rule order');
   if (!Array.isArray(rule.trigger) || !Array.isArray(rule.actions))
     throw new Error('Invalid current rule trigger or actions');
-  if (typeof rule.inactive !== 'boolean')
-    throw new Error('Invalid current rule inactive state');
+  if (typeof rule.inactive !== 'boolean') throw new Error('Invalid current rule inactive state');
   if (rule.stage !== null && rule.stage !== 'pre' && rule.stage !== 'post')
     throw new Error('Invalid current rule stage');
   if (rule.conditionsOp !== 'and' && rule.conditionsOp !== 'or')
@@ -1270,13 +1549,12 @@ export function deriveProposalAuthorizationFacts(
   const payload = proposalRecord(payloadValue);
   const preconditions = proposalRecord(preconditionsValue);
   if (!payload || !preconditions) throw new Error('Malformed generic proposal envelope');
-  if (payload.kind !== operation)
-    throw new Error('Proposal payload kind does not match operation');
+  if (payload.kind !== operation) throw new Error('Proposal payload kind does not match operation');
   if (operation === 'consequential_action') {
     const plan = consequentialActionPlanFromPayload(payload);
     validateConsequentialActionPreconditions(plan, preconditions);
     const resources: Record<string, GovernanceResourceRef> = {};
-    collectProposalResources(preconditions, resources);
+    collectConsequentialPreconditionResources(preconditions, resources);
     for (const resource of consequentialActionResources(plan))
       resources[`${resource.resourceKind}:${resource.resourceId}`] = resource;
     return { resources: Object.values(resources), operations: consequentialActionOperations(plan) };
@@ -1284,12 +1562,16 @@ export function deriveProposalAuthorizationFacts(
 
   const resources: Record<string, GovernanceResourceRef> = {};
   collectProposalResources(payload, resources);
-  const plannedSimulation = operation === 'create_rule'
-    ? proposalRecord(preconditions.reviewedSimulation)
-    : null;
-  collectProposalResources(plannedSimulation?.ruleId === ''
-    ? { ...preconditions, reviewedSimulation: { ...plannedSimulation, ruleId: undefined } }
-    : preconditions, resources, false, true);
+  const plannedSimulation =
+    operation === 'create_rule' ? proposalRecord(preconditions.reviewedSimulation) : null;
+  collectProposalResources(
+    plannedSimulation?.ruleId === ''
+      ? { ...preconditions, reviewedSimulation: { ...plannedSimulation, ruleId: undefined } }
+      : preconditions,
+    resources,
+    false,
+    true,
+  );
 
   const composite = payload.composite === undefined ? null : proposalRecord(payload.composite);
   if (payload.composite !== undefined && !composite)
@@ -1311,7 +1593,10 @@ export function deriveProposalAuthorizationFacts(
     if (transactionFacts.direction !== 'incoming' && transactionFacts.direction !== 'outgoing')
       throw new Error('Missing server-derived transaction direction');
     actualDirection = transactionFacts.direction;
-    resources[`account:${actualAccountId}`] = { resourceKind: 'account', resourceId: actualAccountId };
+    resources[`account:${actualAccountId}`] = {
+      resourceKind: 'account',
+      resourceId: actualAccountId,
+    };
     const categoryId = proposalText(payload.categoryId, 'target category');
     resources[`category:${categoryId}`] = { resourceKind: 'category', resourceId: categoryId };
   } else if (operation === 'create_rule') {
@@ -1320,20 +1605,35 @@ export function deriveProposalAuthorizationFacts(
     const rule = proposalRecord(payload.rule);
     const conditions = rule?.conditions;
     const actions = rule?.actions;
-    if (!rule || rule.stage !== 'post' || rule.conditionsOp !== 'and' ||
-        Object.keys(rule).some((key) => !['stage', 'conditionsOp', 'conditions', 'actions'].includes(key)) ||
-        !Array.isArray(conditions) || conditions.length !== 1 ||
-        !Array.isArray(actions) || actions.length !== 1)
+    if (
+      !rule ||
+      rule.stage !== 'post' ||
+      rule.conditionsOp !== 'and' ||
+      Object.keys(rule).some(
+        (key) => !['stage', 'conditionsOp', 'conditions', 'actions'].includes(key),
+      ) ||
+      !Array.isArray(conditions) ||
+      conditions.length !== 1 ||
+      !Array.isArray(actions) ||
+      actions.length !== 1
+    )
       throw new Error('Unsupported generic rule shape');
     const condition = proposalRecord(conditions[0]);
     const action = proposalRecord(actions[0]);
-    if (!condition || condition.field !== 'payee' || condition.op !== 'is' ||
-        typeof condition.value !== 'string' || !condition.value.trim() ||
-        Object.keys(condition).some((key) => !['field', 'op', 'value', 'type'].includes(key)) ||
-        condition.type !== undefined && condition.type !== 'id' ||
-        !action || action.op !== 'set' || action.field !== 'category' ||
-        Object.keys(action).some((key) => !['op', 'field', 'value'].includes(key)) ||
-        action.value !== categoryId)
+    if (
+      !condition ||
+      condition.field !== 'payee' ||
+      condition.op !== 'is' ||
+      typeof condition.value !== 'string' ||
+      !condition.value.trim() ||
+      Object.keys(condition).some((key) => !['field', 'op', 'value', 'type'].includes(key)) ||
+      (condition.type !== undefined && condition.type !== 'id') ||
+      !action ||
+      action.op !== 'set' ||
+      action.field !== 'category' ||
+      Object.keys(action).some((key) => !['op', 'field', 'value'].includes(key)) ||
+      action.value !== categoryId
+    )
       throw new Error('Unsupported generic rule predicate or action');
     const reviewContext = proposalRecord(preconditions.reviewContext);
     if (reviewContext?.evidenceKey !== undefined && reviewContext.evidenceKey !== null) {
@@ -1341,24 +1641,34 @@ export function deriveProposalAuthorizationFacts(
       resources[`evidence:${evidenceId}`] = { resourceKind: 'evidence', resourceId: evidenceId };
     }
   } else {
-    ruleLifecycleOperation = deriveRuleLifecycleOperation(operation, payload, preconditions, resources);
+    ruleLifecycleOperation = deriveRuleLifecycleOperation(
+      operation,
+      payload,
+      preconditions,
+      resources,
+    );
   }
 
-  const baseOperation = operation === 'set_category'
-    ? normalizedGovernanceOperation(operation, {
-        direction: actualDirection,
-        amount: actualAmount,
-        accountId: actualAccountId,
-        categoryId: payload.categoryId,
-      })
-    : null;
+  const baseOperation =
+    operation === 'set_category'
+      ? normalizedGovernanceOperation(operation, {
+          direction: actualDirection,
+          amount: actualAmount,
+          accountId: actualAccountId,
+          categoryId: payload.categoryId,
+        })
+      : null;
   let baseOperationAdded = false;
 
   const componentOperations = composite ? requireCompositeArray(composite, 'operations') : [];
   const reallocations = composite ? requireCompositeArray(composite, 'reallocations') : [];
-  const transferRecommendations = composite ? requireCompositeArray(composite, 'transferRecommendations') : [];
+  const transferRecommendations = composite
+    ? requireCompositeArray(composite, 'transferRecommendations')
+    : [];
   const ledgerProjections = composite ? requireCompositeArray(composite, 'ledgerProjections') : [];
-  const evidenceReferences = composite ? requireCompositeArray(composite, 'evidenceReferences') : [];
+  const evidenceReferences = composite
+    ? requireCompositeArray(composite, 'evidenceReferences')
+    : [];
 
   if (ruleLifecycleOperation) {
     if (
@@ -1372,10 +1682,20 @@ export function deriveProposalAuthorizationFacts(
     if (composite) {
       assertOnlyFields(
         composite,
-        ['operations', 'reallocations', 'transferRecommendations', 'ledgerProjections', 'evidenceReferences', 'nativePayloadHash'],
+        [
+          'operations',
+          'reallocations',
+          'transferRecommendations',
+          'ledgerProjections',
+          'evidenceReferences',
+          'nativePayloadHash',
+        ],
         'rule lifecycle composite',
       );
-      if (composite.nativePayloadHash !== undefined && typeof composite.nativePayloadHash !== 'string')
+      if (
+        composite.nativePayloadHash !== undefined &&
+        typeof composite.nativePayloadHash !== 'string'
+      )
         throw new Error('Invalid rule lifecycle composite hash');
     }
     operations.push(ruleLifecycleOperation);
@@ -1393,15 +1713,22 @@ export function deriveProposalAuthorizationFacts(
         throw new Error('Operation transaction lacks its server-derived account');
     }
     if (operation === 'set_category') {
-      if (transactionId === undefined || !normalized.accountId || !normalized.categoryId ||
-          !normalized.direction || !normalized.amount)
+      if (
+        transactionId === undefined ||
+        !normalized.accountId ||
+        !normalized.categoryId ||
+        !normalized.direction ||
+        !normalized.amount
+      )
         throw new Error('Set-category operation lacks complete transaction facts');
       if (transactionId === payload.transactionId) {
-        if (baseOperationAdded)
-          throw new Error('Duplicate base transaction operation');
-        if (normalized.accountId !== actualAccountId || normalized.categoryId !== payload.categoryId ||
-            normalized.direction !== actualDirection ||
-            canonicalProposalJson(source.amount) !== canonicalProposalJson(actualAmount))
+        if (baseOperationAdded) throw new Error('Duplicate base transaction operation');
+        if (
+          normalized.accountId !== actualAccountId ||
+          normalized.categoryId !== payload.categoryId ||
+          normalized.direction !== actualDirection ||
+          canonicalProposalJson(source.amount) !== canonicalProposalJson(actualAmount)
+        )
           throw new Error('Operation differs from its server-derived transaction facts');
         if (!baseOperation) throw new Error('Missing authoritative base transaction facts');
         operations.push(baseOperation);
@@ -1409,22 +1736,24 @@ export function deriveProposalAuthorizationFacts(
         continue;
       }
     }
-    operations.push(operation === 'create_rule'
-      ? { ...normalized, accountScope: { kind: 'global' } }
-      : normalized);
+    operations.push(
+      operation === 'create_rule'
+        ? { ...normalized, accountScope: { kind: 'global' } }
+        : normalized,
+    );
   }
   if (baseOperation && !baseOperationAdded) operations.push(baseOperation);
 
   for (const item of reallocations) {
     const source = proposalRecord(item);
-    if (!source || source.operation !== undefined && source.operation !== 'reallocation')
+    if (!source || (source.operation !== undefined && source.operation !== 'reallocation'))
       throw new Error('Unsupported reallocation operation alias');
     operations.push(normalizedGovernanceOperation('reallocation', source, 'outgoing'));
   }
 
   for (const item of transferRecommendations) {
     const plan = proposalRecord(item);
-    if (!plan || plan.operation !== undefined && plan.operation !== 'transfer')
+    if (!plan || (plan.operation !== undefined && plan.operation !== 'transfer'))
       throw new Error('Unsupported transfer operation alias');
     const legs = plan.legs;
     if (!Array.isArray(legs) || legs.length === 0)
@@ -1432,41 +1761,55 @@ export function deriveProposalAuthorizationFacts(
     for (const leg of legs) {
       const source = proposalRecord(leg);
       if (!source) throw new Error('Malformed transfer recommendation leg');
-      operations.push(normalizedGovernanceOperation('transfer', {
-        sourceAccountId: source.sourceAccountId,
-        destinationAccountId: source.destinationAccountId,
-        amount: source.amount,
-      }, 'outgoing'));
+      operations.push(
+        normalizedGovernanceOperation(
+          'transfer',
+          {
+            sourceAccountId: source.sourceAccountId,
+            destinationAccountId: source.destinationAccountId,
+            amount: source.amount,
+          },
+          'outgoing',
+        ),
+      );
     }
   }
 
   for (const item of ledgerProjections) {
     const source = proposalRecord(item);
-    if (!source || source.operation !== undefined && source.operation !== 'ledger_projection')
+    if (!source || (source.operation !== undefined && source.operation !== 'ledger_projection'))
       throw new Error('Unsupported ledger projection operation alias');
     const sameTransaction = source.transactionId === payload.transactionId;
-    if (sameTransaction && operation === 'set_category' &&
-        (source.accountId !== actualAccountId ||
-          source.direction !== undefined && source.direction !== actualDirection ||
-          source.amount !== undefined &&
-            canonicalProposalJson(proposalMoney(source.amount)) !== canonicalProposalJson(actualAmount)))
+    if (
+      sameTransaction &&
+      operation === 'set_category' &&
+      (source.accountId !== actualAccountId ||
+        (source.direction !== undefined && source.direction !== actualDirection) ||
+        (source.amount !== undefined &&
+          canonicalProposalJson(proposalMoney(source.amount)) !==
+            canonicalProposalJson(actualAmount)))
+    )
       throw new Error('Ledger projection differs from server-derived transaction facts');
-    operations.push(normalizedGovernanceOperation(
-      'ledger_projection',
-      source,
-      sameTransaction ? actualDirection : undefined,
-    ));
+    operations.push(
+      normalizedGovernanceOperation(
+        'ledger_projection',
+        source,
+        sameTransaction ? actualDirection : undefined,
+      ),
+    );
   }
 
   for (const item of evidenceReferences) {
     const source = proposalRecord(item);
-    if (!source || source.operation !== undefined && source.operation !== 'evidence_reference')
+    if (!source || (source.operation !== undefined && source.operation !== 'evidence_reference'))
       throw new Error('Unsupported evidence operation alias');
-    operations.push(normalizedGovernanceOperation('evidence_reference', {
-      evidenceId: source.evidenceId,
-      resourceKind: source.resourceKind,
-      resourceId: source.resourceId,
-    }));
+    operations.push(
+      normalizedGovernanceOperation('evidence_reference', {
+        evidenceId: source.evidenceId,
+        resourceKind: source.resourceKind,
+        resourceId: source.resourceId,
+      }),
+    );
   }
   if (operation === 'create_rule' && !operations.some((item) => item.operation === 'create_rule')) {
     operations.push({ operation: 'create_rule', accountScope: { kind: 'global' } });

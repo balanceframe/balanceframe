@@ -1,0 +1,97 @@
+{
+  "contractVersion": "1",
+  "policyVersion": "evidence-policy-1",
+  "maxSettlementDays": 5,
+  "observations": [
+    {
+      "id": "wallet-1",
+      "kind": "user_correction",
+      "sourceId": "wallet-source",
+      "externalEventId": "payment-1",
+      "date": "2026-10-15",
+      "amount": {
+        "minorUnits": "1200",
+        "currency": "USD"
+      },
+      "direction": "outflow",
+      "status": "completed",
+      "eventType": "p2p_payment",
+      "counterparty": "person-1",
+      "fundingInstrumentId": "card-1",
+      "walletId": null,
+      "ledgerTransactionId": null,
+      "ledgerEffect": {
+        "accountId": "checking-1",
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "date": "2026-10-15",
+        "categoryId": "food",
+        "payeeName": null,
+        "notes": null,
+        "splits": []
+      },
+      "reliability": 100,
+      "provenance": {
+        "documentId": "doc-wallet",
+        "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parserVersion": "wallet-v1",
+        "sourceTimestamp": "2026-10-15T12:00:00Z",
+        "receivedAt": "2026-10-15T12:01:00Z"
+      },
+      "reviewedLedgerEffect": true
+    },
+    {
+      "id": "bank-1",
+      "kind": "receipt",
+      "sourceId": "actual",
+      "externalEventId": "payment-1",
+      "date": "2026-10-16",
+      "amount": {
+        "minorUnits": "1200",
+        "currency": "USD"
+      },
+      "direction": "outflow",
+      "status": "completed",
+      "eventType": "unknown",
+      "counterparty": "person-1",
+      "fundingInstrumentId": "card-1",
+      "walletId": null,
+      "ledgerTransactionId": null,
+      "ledgerEffect": null,
+      "reliability": 100,
+      "provenance": {
+        "documentId": "doc-bank",
+        "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "parserVersion": "actual-v1",
+        "sourceTimestamp": "2026-10-16T12:00:00Z",
+        "receivedAt": "2026-10-16T12:01:00Z"
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "id": "reviewed-funding",
+      "fromId": "wallet-1",
+      "toId": "bank-1",
+      "kind": "funding",
+      "state": "confirmed",
+      "allocatedAmount": {
+        "minorUnits": "1200",
+        "currency": "USD"
+      },
+      "partial": false,
+      "score": 100,
+      "reasonCodes": [
+        "human_reviewed"
+      ],
+      "evidenceIds": [
+        "doc-wallet",
+        "doc-bank"
+      ]
+    }
+  ],
+  "wallets": [],
+  "receipts": []
+}

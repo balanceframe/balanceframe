@@ -1,0 +1,263 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/evidence-allocation-v1.json",
+  "title": "Explicit reviewed line-to-settlement allocation matrix v1",
+  "description": "Native enforces row, column, graph and tender capacities, source lineage/current identity, canonical whole-set hashes and exact reviewed effects. The result never authenticates sources or authorizes writes.",
+  "$ref": "#/$defs/DeriveEvidenceAllocationPlanRequest",
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?!\\s*$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "EvidenceAllocationCell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptId", "lineId", "targetObservationId", "amount"],
+      "properties": {
+        "receiptId": {
+          "$ref": "#/$defs/Id"
+        },
+        "lineId": {
+          "$ref": "#/$defs/Id"
+        },
+        "targetObservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "amount": {
+          "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/Money"
+        }
+      }
+    },
+    "EvidenceAllocationReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "sourceHash",
+        "allocationSetHash",
+        "receiptIds",
+        "targetObservationIds",
+        "lineCategories",
+        "cells"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "sourceHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "allocationSetHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "receiptIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 100,
+          "minItems": 1
+        },
+        "targetObservationIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 100,
+          "minItems": 1
+        },
+        "lineCategories": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/evidence-settlement-v1.json#/$defs/EvidenceSettlementLineCategory"
+          },
+          "maxItems": 10000
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceAllocationCell"
+          },
+          "maxItems": 10000
+        }
+      }
+    },
+    "DeriveEvidenceAllocationPlanRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "evidence",
+        "receiptIds",
+        "targetObservationIds",
+        "lineCategories",
+        "cells"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "evidence": {
+          "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/TransactionEvidenceRequest"
+        },
+        "receiptIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 100,
+          "minItems": 1
+        },
+        "targetObservationIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 100,
+          "minItems": 1
+        },
+        "lineCategories": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/evidence-settlement-v1.json#/$defs/EvidenceSettlementLineCategory"
+          },
+          "maxItems": 10000
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceAllocationCell"
+          },
+          "maxItems": 10000
+        },
+        "deriveFundingRelationships": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EvidenceAllocationProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventId",
+        "targetObservationId",
+        "ledgerTransactionId",
+        "evidenceIds",
+        "sources",
+        "ledgerEffect"
+      ],
+      "properties": {
+        "eventId": {
+          "$ref": "#/$defs/Id"
+        },
+        "targetObservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "ledgerTransactionId": {
+          "$ref": "#/$defs/Id"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/EvidenceProvenance"
+          }
+        },
+        "ledgerEffect": {
+          "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/EconomicEventLedgerEffect"
+        }
+      }
+    },
+    "EvidenceAllocationRemainder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptId", "lineId", "amount"],
+      "properties": {
+        "receiptId": {
+          "$ref": "#/$defs/Id"
+        },
+        "lineId": {
+          "$ref": "#/$defs/Id"
+        },
+        "amount": {
+          "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/Money"
+        }
+      }
+    },
+    "EvidenceAllocationTargetRemainder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetObservationId", "amount"],
+      "properties": {
+        "targetObservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "amount": {
+          "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/Money"
+        }
+      }
+    },
+    "EvidenceAllocationPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "sourceHash",
+        "allocationSetHash",
+        "review",
+        "projections",
+        "remainders",
+        "targetRemainders"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "sourceHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "allocationSetHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "review": {
+          "$ref": "#/$defs/EvidenceAllocationReview"
+        },
+        "projections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceAllocationProjection"
+          }
+        },
+        "remainders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceAllocationRemainder"
+          }
+        },
+        "targetRemainders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceAllocationTargetRemainder"
+          }
+        },
+        "fundingRelationships": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/EvidenceRelationship"
+          }
+        }
+      }
+    }
+  }
+}

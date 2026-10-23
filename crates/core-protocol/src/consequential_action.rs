@@ -53,6 +53,43 @@ pub struct ManualTransactionIntent {
     pub splits: Vec<ManualTransactionSplit>,
 }
 
+fn resolution_subject<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+/// Native opening equity bound to a current human-attested before-day balance anchor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WalletOpeningIntent {
+    pub amount: Money,
+    pub date: String,
+    pub proof_set_hash: String,
+    pub activity_manifest_hash: String,
+}
+
+fn wallet_opening<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<WalletOpeningIntent>, D::Error> {
+    WalletOpeningIntent::deserialize(deserializer).map(Some)
+}
+
+/// Trusted SDK readback, including the native equity marker which ordinary transactions lack.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WalletOpeningEquity {
+    pub wallet_id: String,
+    pub account_id: String,
+    pub transaction_id: String,
+    pub date: String,
+    pub amount: Money,
+    pub starting_balance: bool,
+    pub sdk_fingerprint: String,
+    pub payee_id: Option<String>,
+    pub category_id: Option<String>,
+}
+
 /// A single atomic action; composites cannot be nested.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -71,11 +108,47 @@ pub enum AtomicConsequentialActionIntent {
     EvidenceProjection {
         transaction: ManualTransactionIntent,
         evidence_ids: Vec<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "resolution_subject"
+        )]
+        resolution_subject_id: Option<String>,
+    },
+    /// Create an exact reviewed inflow without a purchase/debit readiness claim.
+    EvidenceCredit {
+        transaction: ManualTransactionIntent,
+        evidence_ids: Vec<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "resolution_subject"
+        )]
+        resolution_subject_id: Option<String>,
+    },
+    /// Reclassify an existing settlement while preserving its monetary identity.
+    EvidenceAmendment {
+        expected: Box<LedgerTransaction>,
+        expected_source: Box<balanceframe_financial_core::Transaction>,
+        transaction: ManualTransactionIntent,
+        evidence_ids: Vec<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "resolution_subject"
+        )]
+        resolution_subject_id: Option<String>,
     },
     WalletMaterialization {
         wallet_id: String,
         account_name: String,
         currency: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "wallet_opening"
+        )]
+        opening: Option<WalletOpeningIntent>,
     },
     Transfer {
         transfer_id: String,
@@ -105,11 +178,47 @@ pub enum ConsequentialActionIntent {
     EvidenceProjection {
         transaction: ManualTransactionIntent,
         evidence_ids: Vec<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "resolution_subject"
+        )]
+        resolution_subject_id: Option<String>,
+    },
+    /// Create an exact reviewed inflow without a purchase/debit readiness claim.
+    EvidenceCredit {
+        transaction: ManualTransactionIntent,
+        evidence_ids: Vec<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "resolution_subject"
+        )]
+        resolution_subject_id: Option<String>,
+    },
+    /// Reclassify an existing settlement while preserving its monetary identity.
+    EvidenceAmendment {
+        expected: Box<LedgerTransaction>,
+        expected_source: Box<balanceframe_financial_core::Transaction>,
+        transaction: ManualTransactionIntent,
+        evidence_ids: Vec<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "resolution_subject"
+        )]
+        resolution_subject_id: Option<String>,
     },
     WalletMaterialization {
         wallet_id: String,
         account_name: String,
         currency: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "wallet_opening"
+        )]
+        opening: Option<WalletOpeningIntent>,
     },
     Transfer {
         transfer_id: String,
@@ -140,18 +249,44 @@ impl ConsequentialActionIntent {
             Self::EvidenceProjection {
                 transaction,
                 evidence_ids,
+                resolution_subject_id,
             } => vec![AtomicConsequentialActionIntent::EvidenceProjection {
                 transaction: transaction.clone(),
                 evidence_ids: evidence_ids.clone(),
+                resolution_subject_id: resolution_subject_id.clone(),
+            }],
+            Self::EvidenceCredit {
+                transaction,
+                evidence_ids,
+                resolution_subject_id,
+            } => vec![AtomicConsequentialActionIntent::EvidenceCredit {
+                transaction: transaction.clone(),
+                evidence_ids: evidence_ids.clone(),
+                resolution_subject_id: resolution_subject_id.clone(),
+            }],
+            Self::EvidenceAmendment {
+                expected,
+                expected_source,
+                transaction,
+                evidence_ids,
+                resolution_subject_id,
+            } => vec![AtomicConsequentialActionIntent::EvidenceAmendment {
+                expected: expected.clone(),
+                expected_source: expected_source.clone(),
+                transaction: transaction.clone(),
+                evidence_ids: evidence_ids.clone(),
+                resolution_subject_id: resolution_subject_id.clone(),
             }],
             Self::WalletMaterialization {
                 wallet_id,
                 account_name,
                 currency,
+                opening,
             } => vec![AtomicConsequentialActionIntent::WalletMaterialization {
                 wallet_id: wallet_id.clone(),
                 account_name: account_name.clone(),
                 currency: currency.clone(),
+                opening: opening.clone(),
             }],
             Self::Transfer {
                 transfer_id,
@@ -181,6 +316,8 @@ pub struct ConsequentialActionLedger {
     pub categories: Vec<ConsequentialActionCategory>,
     pub assignments: Vec<ConsequentialActionAssignment>,
     pub wallets: Vec<WalletMapping>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wallet_opening_equities: Vec<WalletOpeningEquity>,
     pub transactions: Vec<LedgerTransaction>,
     pub transfers: Vec<TransferMapping>,
 }
@@ -512,6 +649,11 @@ pub enum ConsequentialActionPostcondition {
         closed: bool,
         opening_balance: Money,
     },
+    WalletOpeningEquity {
+        wallet_id: String,
+        amount: Money,
+        date: String,
+    },
     TransferLedgerEntry {
         transfer_id: String,
         correlation_id: String,
@@ -638,7 +780,8 @@ fn action_accounts(intent: &ConsequentialActionIntent) -> BTreeSet<&str> {
     ) {
         match action {
             AtomicConsequentialActionIntent::ManualTransaction { transaction }
-            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. } => {
+            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. }
+            | AtomicConsequentialActionIntent::EvidenceCredit { transaction, .. } => {
                 accounts.insert(transaction.account_id.as_str());
             }
             AtomicConsequentialActionIntent::Transfer {
@@ -650,14 +793,16 @@ fn action_accounts(intent: &ConsequentialActionIntent) -> BTreeSet<&str> {
                 accounts.insert(destination_account_id.as_str());
             }
             AtomicConsequentialActionIntent::Reallocation { .. }
-            | AtomicConsequentialActionIntent::WalletMaterialization { .. } => {}
+            | AtomicConsequentialActionIntent::WalletMaterialization { .. }
+            | AtomicConsequentialActionIntent::EvidenceAmendment { .. } => {}
         }
     }
 
     let mut accounts: BTreeSet<&str> = BTreeSet::new();
     match intent {
         ConsequentialActionIntent::ManualTransaction { transaction }
-        | ConsequentialActionIntent::EvidenceProjection { transaction, .. } => {
+        | ConsequentialActionIntent::EvidenceProjection { transaction, .. }
+        | ConsequentialActionIntent::EvidenceCredit { transaction, .. } => {
             accounts.insert(transaction.account_id.as_str());
         }
         ConsequentialActionIntent::Transfer {
@@ -674,7 +819,8 @@ fn action_accounts(intent: &ConsequentialActionIntent) -> BTreeSet<&str> {
             }
         }
         ConsequentialActionIntent::Reallocation { .. }
-        | ConsequentialActionIntent::WalletMaterialization { .. } => {}
+        | ConsequentialActionIntent::WalletMaterialization { .. }
+        | ConsequentialActionIntent::EvidenceAmendment { .. } => {}
     }
     accounts
 }
@@ -902,9 +1048,23 @@ fn manual_payee_bindings(
     for atom in intent.atoms() {
         let transaction = match atom {
             AtomicConsequentialActionIntent::ManualTransaction { transaction }
-            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. } => {
-                transaction
-            }
+            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. }
+            | AtomicConsequentialActionIntent::EvidenceCredit { transaction, .. } => transaction,
+            AtomicConsequentialActionIntent::WalletMaterialization {
+                wallet_id,
+                opening: Some(opening),
+                ..
+            } => ManualTransactionIntent {
+                parent_id: format!("wallet-opening:{wallet_id}"),
+                correlation_id: String::new(),
+                account_id: String::new(),
+                amount: opening.amount,
+                date: opening.date,
+                category_id: None,
+                payee_name: Some("Starting Balance".into()),
+                notes: None,
+                splits: vec![],
+            },
             _ => continue,
         };
         let Some(payee_name) = transaction
@@ -1122,7 +1282,7 @@ fn validate_request(
     for evidence in &request.resolved_evidence {
         if evidence.evidence_id.trim().is_empty()
             || evidence.subject_id.trim().is_empty()
-            || !evidence_ids.insert(evidence.evidence_id.as_str())
+            || !evidence_ids.insert((evidence.evidence_id.as_str(), evidence.subject_id.as_str()))
         {
             return Err("invalid_or_duplicate_evidence".into());
         }
@@ -1180,6 +1340,11 @@ fn validate_resolution_observations(
                 return Err("invalid_or_future_observation_time".into());
             }
         }
+        if observation.wallet_balance_anchor.is_some()
+            && observation.kind != ObservationKind::WalletStatementAnchor
+        {
+            return Err("wallet_anchor_metadata_not_allowed".into());
+        }
         if observation.kind == ObservationKind::EconomicEventResolution {
             let DecisionScope::Transaction(subject_id) = &observation.scope else {
                 return Err("invalid_economic_event_resolution_scope".into());
@@ -1202,7 +1367,8 @@ fn validate_resolution_observations(
                         || !reference.authorized
                         || reference.redaction != RedactionState::Visible
                         || reference.evidence_id.trim().is_empty()
-                        || !reference_ids.insert(reference.evidence_id.as_str())
+                        || !reference_ids
+                            .insert((reference.evidence_id.as_str(), subject_id.as_str()))
                 })
             {
                 return Err("invalid_economic_event_resolution".into());
@@ -1213,10 +1379,38 @@ fn validate_resolution_observations(
                     .as_ref()
                     .ok_or("economic_event_ledger_effect_required")?,
             )?;
+        } else if observation.kind == ObservationKind::WalletStatementAnchor {
+            let DecisionScope::Claim(wallet_id) = &observation.scope else {
+                return Err("wallet_opening_anchor_invalid_scope".into());
+            };
+            let anchor = observation
+                .wallet_balance_anchor
+                .as_ref()
+                .ok_or("wallet_opening_anchor_metadata_missing")?;
+            if wallet_id.trim().is_empty()
+                || anchor.wallet_id != *wallet_id
+                || observation.state != ObservationState::Resolved
+                || observation.version.as_deref() != Some("wallet-statement-v1")
+                || observation.content_hash.as_deref() != Some(anchor.proof_set_hash.as_str())
+                || observation.ledger_effect.is_some()
+                || observation.allocation_review.is_some()
+                || observation.observed_at.is_none()
+                || anchor.evidence_ids.is_empty()
+                || anchor.evidence_ids.len() != observation.evidence.len()
+                || observation.evidence.iter().any(|r| {
+                    r.kind != "human_attested_statement"
+                        || !r.authorized
+                        || r.redaction != RedactionState::Visible
+                        || !anchor.evidence_ids.contains(&r.evidence_id)
+                })
+            {
+                return Err("wallet_opening_anchor_invalid".into());
+            }
         } else if observation.state == ObservationState::Resolved
             || observation.content_hash.is_some()
             || observation.version.is_some()
             || observation.ledger_effect.is_some()
+            || observation.wallet_balance_anchor.is_some()
         {
             return Err("resolution_metadata_not_allowed".into());
         }
@@ -1265,6 +1459,12 @@ fn validate_ledger(ledger: &ConsequentialActionLedger) -> Result<(), String> {
             || !wallet_accounts.insert(wallet.account_id.as_str())
         {
             return Err("invalid_or_duplicate_wallet_mapping".into());
+        }
+    }
+    let mut opening_wallets = HashSet::new();
+    for equity in &ledger.wallet_opening_equities {
+        if !opening_wallets.insert(&equity.wallet_id) || !valid_opening_equity(ledger, equity) {
+            return Err("invalid_wallet_opening_equity".into());
         }
     }
     let mut tx_ids = HashSet::new();
@@ -1403,9 +1603,23 @@ fn evaluate_card(request: &PlanConsequentialActionRequest) -> Result<DecisionCar
     for atom in request.intent.atoms() {
         let transaction = match atom {
             AtomicConsequentialActionIntent::ManualTransaction { transaction }
-            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. } => {
-                transaction
-            }
+            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. }
+            | AtomicConsequentialActionIntent::EvidenceCredit { transaction, .. } => transaction,
+            AtomicConsequentialActionIntent::WalletMaterialization {
+                wallet_id,
+                opening: Some(opening),
+                ..
+            } => ManualTransactionIntent {
+                parent_id: format!("wallet-opening:{wallet_id}"),
+                correlation_id: String::new(),
+                account_id: String::new(),
+                amount: opening.amount,
+                date: opening.date,
+                category_id: None,
+                payee_name: Some("Starting Balance".into()),
+                notes: None,
+                splits: vec![],
+            },
             _ => continue,
         };
         for item in &mut source.items {
@@ -1471,6 +1685,91 @@ fn evaluate_shared(request: &PlanConsequentialActionRequest) -> AccountAwareSpen
     })
 }
 
+fn wallet_opening_anchor<'a>(
+    request: &'a PlanConsequentialActionRequest,
+    wallet_id: &str,
+    currency: &str,
+    opening: &WalletOpeningIntent,
+) -> Result<&'a SourceObservation, String> {
+    if opening.amount.minor_units() <= 0
+        || opening.amount.currency() != currency
+        || !valid_date(&opening.date)
+        || !hash_valid(&opening.proof_set_hash)
+        || !hash_valid(&opening.activity_manifest_hash)
+    {
+        return Err("wallet_opening_invalid".into());
+    }
+    let observations: std::collections::BTreeMap<_, _> = request
+        .decision_card_request
+        .financial_snapshot
+        .observations
+        .iter()
+        .filter(|observation| {
+            let value = serde_json::to_value(observation).unwrap_or(Value::Null);
+            value["kind"] == "wallet_statement_anchor"
+                && value["scope"]["kind"] == "claim"
+                && value["scope"]["id"] == wallet_id
+                && value["walletBalanceAnchor"]["boundary"] == "before_day_activity"
+                && value["walletBalanceAnchor"]["asOfDate"] == opening.date
+                && value["walletBalanceAnchor"]["amount"]
+                    == serde_json::to_value(&opening.amount).unwrap_or(Value::Null)
+                && value["walletBalanceAnchor"]["proofSetHash"] == opening.proof_set_hash
+                && value["walletBalanceAnchor"]["activityManifestHash"]
+                    == opening.activity_manifest_hash
+        })
+        .map(|observation| {
+            (
+                serde_json::to_vec(observation).unwrap_or_default(),
+                observation,
+            )
+        })
+        .collect();
+    if observations.len() != 1 {
+        return Err("wallet_opening_anchor_missing_or_ambiguous".into());
+    }
+    let observation = *observations.values().next().unwrap();
+    let value = serde_json::to_value(observation).map_err(|_| "wallet_opening_anchor_invalid")?;
+    let anchor = &value["walletBalanceAnchor"];
+    if value["state"] != "resolved"
+        || value["contentHash"] != opening.proof_set_hash
+        || anchor["walletId"] != wallet_id
+        || anchor["amount"] != serde_json::to_value(&opening.amount).unwrap_or(Value::Null)
+        || anchor["asOfDate"] != opening.date
+        || anchor["boundary"] != "before_day_activity"
+        || anchor["proofSetHash"] != opening.proof_set_hash
+        || anchor["activityManifestHash"] != opening.activity_manifest_hash
+        || anchor["proofIds"].as_array().is_none_or(Vec::is_empty)
+        || anchor["evidenceIds"].as_array().is_none_or(Vec::is_empty)
+        || observation.evidence.is_empty()
+        || value["evidence"].as_array().is_none_or(|refs| {
+            refs.iter().any(|reference| {
+                reference["kind"] != "human_attested_statement"
+                    || reference["authorized"] != true
+                    || reference["redaction"] != "visible"
+            })
+        })
+        || anchor["evidenceIds"].as_array().is_none_or(|ids| {
+            ids.len() != observation.evidence.len()
+                || ids.iter().any(|id| {
+                    !value["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|r| r["evidenceId"] == *id)
+                })
+        })
+    {
+        return Err("wallet_opening_anchor_mismatch".into());
+    }
+    Ok(observation)
+}
+fn hash_valid(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 fn add_observation_evidence(
     request: &PlanConsequentialActionRequest,
     evidence: &mut BTreeMap<String, String>,
@@ -1509,22 +1808,31 @@ fn add_observation_evidence(
 fn event_resolution_for_evidence<'a>(
     request: &'a PlanConsequentialActionRequest,
     evidence_id: &str,
+    resolution_subject_id: Option<&str>,
 ) -> Result<&'a SourceObservation, String> {
-    request
+    let mut candidates = request
         .decision_card_request
         .financial_snapshot
         .observations
         .iter()
-        .find(|observation| {
+        .filter(|observation| {
             observation.kind == ObservationKind::EconomicEventResolution
+                && resolution_subject_id
+                    .is_none_or(|subject| event_subject(observation).ok() == Some(subject))
                 && observation.evidence.iter().any(|reference| {
                     reference.evidence_id == evidence_id
                         && reference.kind == "economic_event_resolution"
                         && reference.authorized
                         && reference.redaction == RedactionState::Visible
                 })
-        })
-        .ok_or_else(|| "trusted_resolution_observation_missing".into())
+        });
+    let observation = candidates
+        .next()
+        .ok_or("trusted_resolution_observation_missing")?;
+    if candidates.next().is_some() {
+        return Err("ambiguous_evidence_resolution".into());
+    }
+    Ok(observation)
 }
 
 fn event_subject(observation: &SourceObservation) -> Result<&str, String> {
@@ -1532,6 +1840,366 @@ fn event_subject(observation: &SourceObservation) -> Result<&str, String> {
         DecisionScope::Transaction(subject_id) => Ok(subject_id),
         _ => Err("invalid_economic_event_resolution_scope".into()),
     }
+}
+
+fn evidence_write_shape(
+    request: &PlanConsequentialActionRequest,
+    transaction: &ManualTransactionIntent,
+) -> Result<(), String> {
+    if transaction.parent_id.trim().is_empty()
+        || transaction.correlation_id.trim().is_empty()
+        || !valid_date(&transaction.date)
+        || transaction.amount.minor_units() == 0
+        || transaction.date.as_str()
+            > request
+                .evaluated_at
+                .get(..10)
+                .ok_or("invalid_evaluated_at")?
+    {
+        return Err("invalid_evidence_transaction".into());
+    }
+    let snapshot = &request.decision_card_request.financial_snapshot;
+    let now = parse_utc(&request.evaluated_at).ok_or("invalid_evaluated_at")?;
+    let captured = parse_utc(&snapshot.captured_at).ok_or("invalid_snapshot_time")?;
+    let maximum = request
+        .decision_card_request
+        .context
+        .policy
+        .max_budget_snapshot_age_minutes
+        .ok_or("snapshot_freshness_policy_required")?;
+    if captured > now
+        || now - captured > i128::from(maximum) * 60_000_000_000
+        || now
+            >= parse_utc(&request.decision_card_request.liquidity_policy.expires_at)
+                .ok_or("invalid_policy_expiry")?
+    {
+        return Err("stale_evidence_action_source".into());
+    }
+    let account = live_account(request, &transaction.account_id)?;
+    if transaction.amount.currency() != account.currency {
+        return Err("evidence_transaction_currency_mismatch".into());
+    }
+    if !transaction.splits.is_empty() && transaction.category_id.is_some() {
+        return Err("split_parent_category_must_be_null".into());
+    }
+    let mut total = 0i64;
+    for split in &transaction.splits {
+        if split.amount.currency() != transaction.amount.currency()
+            || split.amount.minor_units().signum() != transaction.amount.minor_units().signum()
+        {
+            return Err("invalid_evidence_split".into());
+        }
+        total = checked_add(total, split.amount.minor_units())?;
+    }
+    if !transaction.splits.is_empty() && total != transaction.amount.minor_units() {
+        return Err("split_total_mismatch".into());
+    }
+    for (category, _) in transaction_category_deltas(transaction) {
+        if category.trim().is_empty()
+            || !request
+                .current_ledger
+                .categories
+                .iter()
+                .any(|current| current.category_id == category)
+        {
+            return Err("evidence_category_missing".into());
+        }
+        let fact = category_fact(snapshot, category, &transaction.date[..7])
+            .ok_or("evidence_category_fact_missing")?;
+        if fact.availability.currency() != transaction.amount.currency() {
+            return Err("evidence_category_currency_mismatch".into());
+        }
+    }
+    Ok(())
+}
+fn transaction_postcondition(
+    transaction: &ManualTransactionIntent,
+) -> ConsequentialActionPostcondition {
+    ConsequentialActionPostcondition::Transaction {
+        parent_id: transaction.parent_id.clone(),
+        account_id: transaction.account_id.clone(),
+        amount: transaction.amount.clone(),
+        date: transaction.date.clone(),
+        category_id: transaction.category_id.clone(),
+        payee_name: transaction.payee_name.clone(),
+        notes: transaction.notes.clone(),
+        splits: transaction.splits.clone(),
+    }
+}
+fn validate_evidence_credit(
+    request: &PlanConsequentialActionRequest,
+    transaction: &ManualTransactionIntent,
+    evidence_selection: (&[String], Option<&str>),
+    seen_ids: &mut HashSet<String>,
+    seen_correlations: &mut HashSet<String>,
+    balances: &mut BTreeMap<String, Money>,
+    postconditions: &mut Vec<ConsequentialActionPostcondition>,
+) -> Result<(), String> {
+    let (evidence_ids, resolution_subject_id) = evidence_selection;
+    evidence_write_shape(request, transaction)?;
+    if transaction.amount.minor_units() <= 0
+        || !seen_ids.insert(transaction.parent_id.clone())
+        || !seen_correlations.insert(transaction.correlation_id.clone())
+    {
+        return Err("invalid_or_duplicate_evidence_credit".into());
+    }
+    if request
+        .decision_card_request
+        .financial_snapshot
+        .legacy_snapshot
+        .transactions
+        .iter()
+        .any(|row| {
+            row.id == transaction.parent_id
+                || row
+                    .subtransactions
+                    .iter()
+                    .any(|child| child.id == transaction.parent_id)
+        })
+    {
+        return Err("duplicate_evidence_credit_source".into());
+    }
+    validate_projection_evidence(request, transaction, evidence_ids, resolution_subject_id)?;
+    let account = live_account(request, &transaction.account_id)?;
+    let current = balances
+        .get(&transaction.account_id)
+        .unwrap_or(&account.balance);
+    balances.insert(
+        transaction.account_id.clone(),
+        Money::new(
+            checked_add(current.minor_units(), transaction.amount.minor_units())?,
+            account.currency.clone(),
+        ),
+    );
+    postconditions.push(transaction_postcondition(transaction));
+    Ok(())
+}
+fn source_row_matches_expected(
+    source: &balanceframe_financial_core::Transaction,
+    expected: &LedgerTransaction,
+) -> bool {
+    source.id == expected.parent_id
+        && source.account_id == expected.account_id
+        && source.amount == expected.amount
+        && source.date == expected.date
+        && source.category_id == expected.category_id
+        && source.payee_name == expected.payee_name
+        && source.notes == expected.notes
+        && source.transfer_account_id == expected.transfer_account_id
+        && source.subtransactions.len() == expected.splits.len()
+        && source
+            .subtransactions
+            .iter()
+            .zip(&expected.splits)
+            .all(|(child, split)| {
+                child.account_id == source.account_id
+                    && child.date == source.date
+                    && child.amount == split.amount
+                    && child.category_id.as_ref() == Some(&split.category_id)
+                    && child.subtransactions.is_empty()
+                    && !child.reconciled
+                    && child.transfer_account_id.is_none()
+            })
+}
+fn original_transaction_intent(
+    expected: &LedgerTransaction,
+    correlation_id: &str,
+) -> ManualTransactionIntent {
+    ManualTransactionIntent {
+        parent_id: expected.parent_id.clone(),
+        correlation_id: correlation_id.to_owned(),
+        account_id: expected.account_id.clone(),
+        amount: expected.amount.clone(),
+        date: expected.date.clone(),
+        category_id: expected.category_id.clone(),
+        payee_name: expected.payee_name.clone(),
+        notes: expected.notes.clone(),
+        splits: expected.splits.clone(),
+    }
+}
+
+fn validate_evidence_amendment(
+    request: &PlanConsequentialActionRequest,
+    expected: &LedgerTransaction,
+    expected_source: &balanceframe_financial_core::Transaction,
+    transaction: &ManualTransactionIntent,
+    evidence_ids: &[String],
+    resolution_subject_id: Option<&str>,
+    postconditions: &mut Vec<ConsequentialActionPostcondition>,
+) -> Result<(), String> {
+    evidence_write_shape(request, transaction)?;
+    evidence_write_shape(
+        request,
+        &original_transaction_intent(expected, &transaction.correlation_id),
+    )?;
+    if expected.transfer_account_id.is_some()
+        || expected_source.reconciled
+        || !source_row_matches_expected(expected_source, expected)
+        || transaction.parent_id != expected.parent_id
+        || transaction.account_id != expected.account_id
+        || transaction.amount != expected.amount
+        || transaction.date != expected.date
+        || transaction.payee_name != expected.payee_name
+        || transaction.notes != expected.notes
+        || (transaction.category_id == expected.category_id
+            && transaction.splits == expected.splits)
+    {
+        return Err("invalid_evidence_amendment_identity".into());
+    }
+    if !expected_source.subtransactions.is_empty()
+        && (expected_source.subtransactions.len() != transaction.splits.len()
+            || !expected_source
+                .subtransactions
+                .iter()
+                .zip(&transaction.splits)
+                .all(|(child, split)| child.amount == split.amount))
+    {
+        return Err("amendment_existing_split_reshape_unsupported".into());
+    }
+    let current = request
+        .current_ledger
+        .transactions
+        .iter()
+        .find(|row| row.parent_id == expected.parent_id)
+        .ok_or("amendment_source_missing")?;
+    let source = request
+        .decision_card_request
+        .financial_snapshot
+        .legacy_snapshot
+        .transactions
+        .iter()
+        .find(|row| row.id == expected.parent_id)
+        .ok_or("amendment_source_missing")?;
+    if current != expected
+        || source != expected_source
+        || request
+            .decision_card_request
+            .financial_snapshot
+            .legacy_snapshot
+            .transactions
+            .iter()
+            .filter(|row| row.id == expected.parent_id)
+            .count()
+            != 1
+    {
+        return Err("amendment_source_changed".into());
+    }
+    validate_projection_evidence(request, transaction, evidence_ids, resolution_subject_id)?;
+    for evidence in evidence_ids {
+        if event_subject(event_resolution_for_evidence(
+            request,
+            evidence,
+            resolution_subject_id,
+        )?)? != expected.parent_id
+        {
+            return Err("amendment_evidence_target_mismatch".into());
+        }
+    }
+    postconditions.push(transaction_postcondition(transaction));
+    Ok(())
+}
+fn reverse_evidence_amendment(
+    card: &mut Value,
+    ledger: &mut Value,
+    expected: &LedgerTransaction,
+    expected_source: &balanceframe_financial_core::Transaction,
+    transaction: &ManualTransactionIntent,
+) -> Result<(), String> {
+    let rows = ledger["transactions"]
+        .as_array_mut()
+        .ok_or("transaction_collection_missing")?;
+    let index = unique_row_index(rows, |row| row["parentId"] == transaction.parent_id)?;
+    if !manual_row_matches(&rows[index], transaction) {
+        return Err("amendment_postcondition_mismatch".into());
+    }
+    rows[index] = serde_json::to_value(expected).map_err(|error| error.to_string())?;
+    let source_rows = card["financialSnapshot"]["legacySnapshot"]["transactions"]
+        .as_array_mut()
+        .ok_or("legacy_transaction_collection_missing")?;
+    let index = unique_row_index(source_rows, |row| row["id"] == transaction.parent_id)?;
+    let mut restored = source_rows[index].clone();
+    let children = restored["subtransactions"]
+        .as_array()
+        .ok_or("legacy_transaction_children_missing")?;
+    if children.len() != transaction.splits.len()
+        || !children
+            .iter()
+            .zip(&transaction.splits)
+            .all(|(child, split)| {
+                child["accountId"] == transaction.account_id
+                    && child["date"] == transaction.date
+                    && child["amount"] == serde_json::to_value(&split.amount).unwrap_or(Value::Null)
+                    && child["categoryId"] == split.category_id
+            })
+    {
+        return Err("amendment_split_postcondition_mismatch".into());
+    }
+    if restored["categoryId"]
+        != serde_json::to_value(&transaction.category_id).unwrap_or(Value::Null)
+    {
+        return Err("amendment_category_postcondition_mismatch".into());
+    }
+    let mut child_ids = BTreeSet::new();
+    for (index, child) in children.iter().enumerate() {
+        if !child["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id != transaction.parent_id && child_ids.insert(id))
+        {
+            return Err("amendment_child_identity_mismatch".into());
+        }
+        if let Some(before) = expected_source.subtransactions.get(index) {
+            let original_child = serde_json::to_value(before).map_err(|error| error.to_string())?;
+            let mut restored_child = child.clone();
+            for field in ["categoryId", "categoryName"] {
+                restored_child[field] = original_child[field].clone();
+            }
+            if restored_child != original_child {
+                return Err("amendment_child_source_changed".into());
+            }
+        } else if !child["payeeId"].is_null()
+            || !child["payeeName"].is_null()
+            || !child["notes"].is_null()
+            || !child["importedId"].is_null()
+            || !child["importedPayee"].is_null()
+            || !child["transferAccountId"].is_null()
+            || child["reconciled"] != false
+            || child["cleared"] != expected_source.cleared
+            || child["tags"] != json!([])
+            || child["subtransactions"] != json!([])
+        {
+            return Err("amendment_child_metadata_mismatch".into());
+        }
+    }
+    let original = serde_json::to_value(expected_source).map_err(|error| error.to_string())?;
+    for field in ["categoryId", "categoryName", "subtransactions"] {
+        restored[field] = original[field].clone();
+    }
+    if restored != original {
+        return Err("amendment_source_postcondition_mismatch".into());
+    }
+    source_rows[index] = original;
+    let original_intent = original_transaction_intent(expected, &transaction.correlation_id);
+    for (source, inverse) in [(transaction, true), (&original_intent, false)] {
+        for (category, amount) in transaction_category_deltas(source) {
+            let delta = if inverse {
+                amount.checked_neg().ok_or("money_arithmetic_overflow")?
+            } else {
+                amount
+            };
+            adjust_named_money(
+                &mut card["financialSnapshot"]["liquidity"]["categories"],
+                NamedMoneyTarget {
+                    id_key: "categoryId",
+                    id: category,
+                    month: Some(("asOfMonth", &transaction.date[..7])),
+                    money_key: "availability",
+                },
+                delta,
+                transaction.amount.currency(),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn source_effect_matches_transaction(
@@ -1574,6 +2242,7 @@ fn action_evidence(
     card: Option<&DecisionCard>,
 ) -> Result<Vec<ConsequentialActionEvidence>, String> {
     let mut used = BTreeMap::<String, String>::new();
+    let mut projection_used = BTreeSet::new();
     for atom in request.intent.atoms() {
         match atom {
             AtomicConsequentialActionIntent::Reallocation { assignments } => {
@@ -1605,14 +2274,29 @@ fn action_evidence(
                     )?;
                 }
             }
-            AtomicConsequentialActionIntent::EvidenceProjection { evidence_ids, .. } => {
+            AtomicConsequentialActionIntent::EvidenceProjection {
+                evidence_ids,
+                resolution_subject_id,
+                ..
+            }
+            | AtomicConsequentialActionIntent::EvidenceCredit {
+                evidence_ids,
+                resolution_subject_id,
+                ..
+            }
+            | AtomicConsequentialActionIntent::EvidenceAmendment {
+                evidence_ids,
+                resolution_subject_id,
+                ..
+            } => {
                 for evidence_id in evidence_ids {
                     let id = evidence_id.clone();
-                    let observation = event_resolution_for_evidence(request, &id)?;
-                    if used
-                        .insert(id, event_subject(observation)?.to_owned())
-                        .is_some()
-                    {
+                    let observation = event_resolution_for_evidence(
+                        request,
+                        &id,
+                        resolution_subject_id.as_deref(),
+                    )?;
+                    if !projection_used.insert((id, event_subject(observation)?.to_owned())) {
                         return Err("duplicate_projection_evidence".into());
                     }
                 }
@@ -1633,15 +2317,26 @@ fn action_evidence(
                     &DecisionScope::Account(destination_account_id),
                 )?;
             }
-            AtomicConsequentialActionIntent::WalletMaterialization { .. } => {}
+            AtomicConsequentialActionIntent::WalletMaterialization {
+                wallet_id,
+                currency,
+                opening: Some(opening),
+                ..
+            } => {
+                let anchor = wallet_opening_anchor(request, &wallet_id, &currency, &opening)?;
+                for reference in &anchor.evidence {
+                    used.insert(reference.evidence_id.clone(), wallet_id.clone());
+                }
+            }
+            AtomicConsequentialActionIntent::WalletMaterialization { opening: None, .. } => {}
         }
     }
     let mut result = Vec::new();
-    for (id, subject_id) in used {
+    for (id, subject_id) in used.into_iter().chain(projection_used) {
         let evidence = request
             .resolved_evidence
             .iter()
-            .find(|evidence| evidence.evidence_id == id)
+            .find(|evidence| evidence.evidence_id == id && evidence.subject_id == subject_id)
             .ok_or_else(|| format!("evidence_unresolved:{id}"))?;
         if evidence.subject_id != subject_id
             || evidence.state != EvidenceState::Resolved
@@ -1757,14 +2452,30 @@ fn ensure_unique_projection_subjects(
 ) -> Result<(), String> {
     let mut projected_subjects = HashSet::new();
     for atom in atoms {
-        let AtomicConsequentialActionIntent::EvidenceProjection { evidence_ids, .. } = atom else {
-            continue;
+        let (evidence_ids, resolution_subject_id) = match atom {
+            AtomicConsequentialActionIntent::EvidenceProjection {
+                evidence_ids,
+                resolution_subject_id,
+                ..
+            }
+            | AtomicConsequentialActionIntent::EvidenceCredit {
+                evidence_ids,
+                resolution_subject_id,
+                ..
+            }
+            | AtomicConsequentialActionIntent::EvidenceAmendment {
+                evidence_ids,
+                resolution_subject_id,
+                ..
+            } => (evidence_ids, resolution_subject_id),
+            _ => continue,
         };
         let mut atom_subjects = HashSet::new();
         for evidence_id in evidence_ids {
             atom_subjects.insert(event_subject(event_resolution_for_evidence(
                 request,
                 evidence_id,
+                resolution_subject_id.as_deref(),
             )?)?);
         }
         if atom_subjects
@@ -1897,7 +2608,8 @@ fn dispatch_preconditions_from_ledger(
                 });
             }
             AtomicConsequentialActionIntent::ManualTransaction { transaction }
-            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. } => {
+            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. }
+            | AtomicConsequentialActionIntent::EvidenceCredit { transaction, .. } => {
                 let current = balance_at_prefix(ledger, &balances, &transaction.account_id)?;
                 if current.currency() != transaction.amount.currency() {
                     return Err("manual_transaction_currency_or_source_mismatch".into());
@@ -1951,7 +2663,8 @@ fn dispatch_preconditions_from_ledger(
                     assignments: Vec::new(),
                 });
             }
-            AtomicConsequentialActionIntent::WalletMaterialization { .. } => {}
+            AtomicConsequentialActionIntent::WalletMaterialization { .. }
+            | AtomicConsequentialActionIntent::EvidenceAmendment { .. } => {}
         }
     }
     Ok(result)
@@ -2312,10 +3025,17 @@ fn derive_action(
                     ConsequentialActionReasonCode::ReservationCommitment,
                 ]);
                 if let AtomicConsequentialActionIntent::EvidenceProjection {
-                    evidence_ids, ..
+                    evidence_ids,
+                    resolution_subject_id,
+                    ..
                 } = atom
                 {
-                    validate_projection_evidence(request, transaction, evidence_ids)?;
+                    validate_projection_evidence(
+                        request,
+                        transaction,
+                        evidence_ids,
+                        resolution_subject_id.as_deref(),
+                    )?;
                     reasons.push(ConsequentialActionReasonCode::EvidenceResolution);
                     for evidence_id in evidence_ids {
                         if evidence_impact_ids.insert(evidence_id.clone()) {
@@ -2327,10 +3047,43 @@ fn derive_action(
                     }
                 }
             }
+            AtomicConsequentialActionIntent::EvidenceCredit {
+                transaction,
+                evidence_ids,
+                resolution_subject_id,
+            } => {
+                validate_evidence_credit(
+                    request,
+                    transaction,
+                    (evidence_ids, resolution_subject_id.as_deref()),
+                    &mut transaction_ids,
+                    &mut transaction_correlations,
+                    &mut balances,
+                    &mut transactions,
+                )?;
+            }
+            AtomicConsequentialActionIntent::EvidenceAmendment {
+                expected,
+                expected_source,
+                transaction,
+                evidence_ids,
+                resolution_subject_id,
+            } => {
+                validate_evidence_amendment(
+                    request,
+                    expected,
+                    expected_source,
+                    transaction,
+                    evidence_ids,
+                    resolution_subject_id.as_deref(),
+                    &mut transactions,
+                )?;
+            }
             AtomicConsequentialActionIntent::WalletMaterialization {
                 wallet_id,
                 account_name,
                 currency: wallet_currency,
+                opening,
             } => {
                 if wallet_id.trim().is_empty()
                     || account_name.trim().is_empty()
@@ -2347,8 +3100,19 @@ fn derive_action(
                     account_name: account_name.clone(),
                     on_budget: true,
                     closed: false,
-                    opening_balance: Money::zero(wallet_currency.clone()),
+                    opening_balance: opening
+                        .as_ref()
+                        .map(|value| value.amount.clone())
+                        .unwrap_or_else(|| Money::zero(wallet_currency.clone())),
                 });
+                if let Some(opening) = opening {
+                    wallet_opening_anchor(request, wallet_id, wallet_currency, opening)?;
+                    wallets.push(ConsequentialActionPostcondition::WalletOpeningEquity {
+                        wallet_id: wallet_id.clone(),
+                        amount: opening.amount.clone(),
+                        date: opening.date.clone(),
+                    });
+                }
             }
             AtomicConsequentialActionIntent::Transfer {
                 transfer_id,
@@ -2960,17 +3724,24 @@ fn validate_projection_evidence(
     request: &PlanConsequentialActionRequest,
     transaction: &ManualTransactionIntent,
     evidence_ids: &[String],
+    resolution_subject_id: Option<&str>,
 ) -> Result<(), String> {
     if evidence_ids.is_empty() {
         return Err("projection_evidence_required".into());
     }
     let mut seen = HashSet::new();
+    let mut subject = None;
     for evidence_id in evidence_ids {
         if evidence_id.trim().is_empty() || !seen.insert(evidence_id.as_str()) {
             return Err("duplicate_projection_evidence".into());
         }
-        let observation = event_resolution_for_evidence(request, evidence_id)?;
+        let observation =
+            event_resolution_for_evidence(request, evidence_id, resolution_subject_id)?;
         let subject_id = event_subject(observation)?;
+        if subject.is_some_and(|previous| previous != subject_id) {
+            return Err("projection_multiple_event_subjects".into());
+        }
+        subject = Some(subject_id);
         if observation
             .ledger_effect
             .as_ref()
@@ -2981,7 +3752,9 @@ fn validate_projection_evidence(
         let evidence = request
             .resolved_evidence
             .iter()
-            .find(|evidence| evidence.evidence_id == *evidence_id)
+            .find(|evidence| {
+                evidence.evidence_id == *evidence_id && evidence.subject_id == subject_id
+            })
             .ok_or("projection_evidence_missing")?;
         if evidence.state != EvidenceState::Resolved
             || evidence.subject_id != subject_id
@@ -3623,6 +4396,145 @@ fn remove_action_wallet_observations(card: &mut Value, account_id: &str) -> Resu
     Ok(())
 }
 
+fn valid_opening_equity(ledger: &ConsequentialActionLedger, equity: &WalletOpeningEquity) -> bool {
+    equity.starting_balance
+        && hash_valid(&equity.sdk_fingerprint)
+        && equity.amount.minor_units() > 0
+        && valid_date(&equity.date)
+        && equity
+            .payee_id
+            .as_ref()
+            .is_some_and(|id| !id.trim().is_empty())
+        && ledger.wallets.iter().any(|mapping| {
+            mapping.wallet_id == equity.wallet_id && mapping.account_id == equity.account_id
+        })
+        && ledger
+            .transactions
+            .iter()
+            .filter(|row| {
+                row.parent_id == equity.transaction_id
+                    && row.account_id == equity.account_id
+                    && row.amount == equity.amount
+                    && row.date == equity.date
+                    && row.category_id == equity.category_id
+                    && row.payee_name.as_deref() == Some("Starting Balance")
+                    && row.notes.is_none()
+                    && row.splits.is_empty()
+                    && row.transfer_account_id.is_none()
+            })
+            .count()
+            == 1
+}
+fn reverse_wallet_opening(
+    card: &mut Value,
+    ledger: &mut Value,
+    wallet_id: &str,
+    account_id: &str,
+    opening: &WalletOpeningIntent,
+    bindings: &[ConsequentialActionManualPayeeBinding],
+) -> Result<(), String> {
+    let equities = ledger["walletOpeningEquities"]
+        .as_array()
+        .ok_or("wallet_opening_equity_missing")?;
+    let equity_index = unique_row_index(equities, |row| row["walletId"] == wallet_id)?;
+    let equity = equities[equity_index].clone();
+    let transaction_id = equity["transactionId"]
+        .as_str()
+        .ok_or("wallet_opening_equity_missing")?;
+    let rows = card["financialSnapshot"]["legacySnapshot"]["transactions"]
+        .as_array()
+        .ok_or("legacy_transaction_collection_missing")?;
+    let index = unique_row_index(rows, |row| row["id"] == transaction_id)?;
+    let row = rows[index].clone();
+    if row["accountId"] != account_id
+        || row["amount"] != serde_json::to_value(&opening.amount).unwrap_or(Value::Null)
+        || row["date"] != opening.date
+        || row["cleared"] != true
+        || row["reconciled"] != false
+        || row["payeeId"] != equity["payeeId"]
+        || row["categoryId"] != equity["categoryId"]
+        || row["payeeName"] != "Starting Balance"
+        || !row["notes"].is_null()
+        || !row["importedId"].is_null()
+        || !row["importedPayee"].is_null()
+        || !row["transferAccountId"].is_null()
+        || row["tags"] != json!([])
+        || row["subtransactions"] != json!([])
+    {
+        return Err("wallet_opening_equity_changed".into());
+    }
+    let virtual_id = format!("wallet-opening:{wallet_id}");
+    let source = bindings
+        .iter()
+        .find(|binding| binding.parent_id == virtual_id)
+        .ok_or("wallet_opening_payee_binding_missing")?;
+    let binding = ConsequentialActionManualPayeeBinding {
+        parent_id: transaction_id.into(),
+        payee_name: source.payee_name.clone(),
+        existing_payee_id: source.existing_payee_id.clone(),
+    };
+    let transaction = ManualTransactionIntent {
+        parent_id: transaction_id.into(),
+        correlation_id: String::new(),
+        account_id: account_id.into(),
+        amount: opening.amount.clone(),
+        date: opening.date.clone(),
+        category_id: equity["categoryId"].as_str().map(str::to_owned),
+        payee_name: Some("Starting Balance".into()),
+        notes: None,
+        splits: vec![],
+    };
+    card["financialSnapshot"]["legacySnapshot"]["transactions"]
+        .as_array_mut()
+        .unwrap()
+        .remove(index);
+    // SDK starting-balance payees may be shared by multiple approved wallet openings.
+    // Replace only virtual bindings backed by another verified opening proof.
+    let opening_bindings: Vec<_> = bindings
+        .iter()
+        .map(|source| {
+            let parent_id = source
+                .parent_id
+                .strip_prefix("wallet-opening:")
+                .and_then(|wallet| equities.iter().find(|equity| equity["walletId"] == wallet))
+                .and_then(|equity| equity["transactionId"].as_str())
+                .unwrap_or(&source.parent_id);
+            ConsequentialActionManualPayeeBinding {
+                parent_id: parent_id.to_owned(),
+                payee_name: source.payee_name.clone(),
+                existing_payee_id: source.existing_payee_id.clone(),
+            }
+        })
+        .collect();
+    reverse_legacy_payee(card, &transaction, Some(&binding), &row, &opening_bindings)?;
+    reverse_legacy_account_balance(
+        card,
+        account_id,
+        opening
+            .amount
+            .minor_units()
+            .checked_neg()
+            .ok_or("money_arithmetic_overflow")?,
+        opening.amount.currency(),
+    )?;
+    remove_action_transaction_projection(card, account_id, transaction_id)?;
+    ledger["transactions"]
+        .as_array_mut()
+        .ok_or("transaction_collection_missing")?
+        .retain(|row| row["parentId"] != transaction_id);
+    ledger["walletOpeningEquities"]
+        .as_array_mut()
+        .unwrap()
+        .remove(equity_index);
+    if ledger["walletOpeningEquities"] == json!([]) {
+        ledger
+            .as_object_mut()
+            .unwrap()
+            .remove("walletOpeningEquities");
+    }
+    Ok(())
+}
+
 fn reverse_legacy_wallet_account(
     card: &mut Value,
     account_id: &str,
@@ -3759,7 +4671,8 @@ fn reverse_action_in_value(
                 }
             }
             AtomicConsequentialActionIntent::ManualTransaction { transaction }
-            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. } => {
+            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. }
+            | AtomicConsequentialActionIntent::EvidenceCredit { transaction, .. } => {
                 let tx_rows = ledger["transactions"]
                     .as_array_mut()
                     .ok_or("transaction_collection_missing")?;
@@ -3821,11 +4734,29 @@ fn reverse_action_in_value(
                     )?;
                 }
             }
+            AtomicConsequentialActionIntent::EvidenceAmendment {
+                expected,
+                expected_source,
+                transaction,
+                ..
+            } => {
+                reverse_evidence_amendment(
+                    decision_card_request,
+                    ledger,
+                    expected,
+                    expected_source,
+                    transaction,
+                )?;
+            }
             AtomicConsequentialActionIntent::WalletMaterialization {
                 wallet_id,
                 account_name,
                 currency,
+                opening,
             } => {
+                let opening_amount = opening
+                    .as_ref()
+                    .map_or(0, |value| value.amount.minor_units());
                 let (mapping_index, account_id) = {
                     let mappings = ledger["wallets"]
                         .as_array()
@@ -3855,7 +4786,7 @@ fn reverse_action_in_value(
                     || account["onBudget"] != true
                     || account["closed"] != false
                     || account["currency"] != *currency
-                    || balance != 0
+                    || balance != opening_amount
                     || balance_currency != *currency
                 {
                     return Err("wallet_postcondition_mismatch".into());
@@ -3872,9 +4803,19 @@ fn reverse_action_in_value(
                 if fact["currency"] != *currency
                     || fact["onBudget"] != true
                     || fact["closed"] != false
-                    || parse_money(&fact["recordedBalance"])? != (0, currency.clone())
+                    || parse_money(&fact["recordedBalance"])? != (opening_amount, currency.clone())
                 {
                     return Err("wallet_source_postcondition_mismatch".into());
+                }
+                if let Some(opening) = opening {
+                    reverse_wallet_opening(
+                        decision_card_request,
+                        ledger,
+                        wallet_id,
+                        &account_id,
+                        opening,
+                        payee_bindings,
+                    )?;
                 }
                 remove_action_wallet_observations(decision_card_request, &account_id)?;
                 reverse_legacy_wallet_account(
@@ -4170,6 +5111,13 @@ fn postconditions_match_current(request: &VerifyConsequentialActionRequest) -> b
                             | AtomicConsequentialActionIntent::EvidenceProjection {
                                 transaction,
                                 ..
+                            }
+                            | AtomicConsequentialActionIntent::EvidenceCredit {
+                                transaction, ..
+                            }
+                            | AtomicConsequentialActionIntent::EvidenceAmendment {
+                                transaction,
+                                ..
                             } if transaction.parent_id == *parent_id => Some(transaction),
                             _ => None,
                         })
@@ -4220,6 +5168,24 @@ fn postconditions_match_current(request: &VerifyConsequentialActionRequest) -> b
                         && account.balance == *opening_balance
                         && account.currency == opening_balance.currency()
                 }),
+            ConsequentialActionPostcondition::WalletOpeningEquity {
+                wallet_id,
+                amount,
+                date,
+            } => {
+                request
+                    .current_ledger
+                    .wallet_opening_equities
+                    .iter()
+                    .filter(|equity| {
+                        equity.wallet_id == *wallet_id
+                            && equity.amount == *amount
+                            && equity.date == *date
+                            && valid_opening_equity(&request.current_ledger, equity)
+                    })
+                    .count()
+                    == 1
+            }
             ConsequentialActionPostcondition::TransferLedgerEntry {
                 transfer_id,
                 correlation_id,
@@ -4286,6 +5252,12 @@ where
     if request.financial_policy_version != request.plan.source.financial_policy_version {
         return Ok(invalid(
             ConsequentialActionVerificationReason::PolicyChanged,
+        ));
+    }
+    if validate_postcondition_times(&request.decision_card_request, &request.evaluated_at).is_err()
+    {
+        return Ok(invalid(
+            ConsequentialActionVerificationReason::SourceChanged,
         ));
     }
     if validate_ledger(&request.current_ledger).is_err() || !postconditions_match_current(&request)
@@ -4416,6 +5388,32 @@ where
     }
     // Replanning after this write would require a freshness attestation the source correctly invalidated.
     if invalidated_freshness_accounts.is_empty() {
+        let replay_hashes = |replay: &PlanConsequentialActionRequest| -> Result<_, String> {
+            let material = SourceHashMaterial {
+                decision_card_request: &replay.decision_card_request,
+                action: &replay.intent,
+                ledger: &replay.current_ledger,
+                evidence: &replay.resolved_evidence,
+                financial_policy_version: &replay.financial_policy_version,
+                idempotency_key: &replay.idempotency_key,
+                invalidated_freshness_accounts: &invalidated_freshness_accounts,
+                invalidated_supplemental_facts: &request.plan.source.invalidated_supplemental_facts,
+                manual_payee_bindings: &request.plan.source.manual_payee_bindings,
+            };
+            Ok((
+                hash_material(&material, false)?,
+                hash_material(&material, true)?,
+                evidence_material_hash(&replay.decision_card_request, &replay.resolved_evidence)?,
+            ))
+        };
+        let before = replay_hashes(&restored)?;
+        if rebase_actual_postcondition_capture(&mut restored).is_err()
+            || replay_hashes(&restored)? != before
+        {
+            return Ok(invalid(
+                ConsequentialActionVerificationReason::SourceChanged,
+            ));
+        }
         let expected = match build_plan(restored, false) {
             Ok(plan) => plan,
             Err(error) => return Ok(invalid(classify_source_error(&error))),
@@ -4439,6 +5437,116 @@ where
     })
 }
 
+fn validate_postcondition_times(
+    card: &DecisionCardRequest,
+    verified_at: &str,
+) -> Result<(), String> {
+    let verified = parse_utc(verified_at).ok_or("invalid_evaluated_at")?;
+    let snapshot = &card.financial_snapshot;
+    if parse_utc(&snapshot.captured_at).is_none_or(|time| time > verified)
+        || parse_utc(&card.context.evaluated_at).is_none_or(|time| time > verified)
+    {
+        return Err("invalid_or_future_observation_time".into());
+    }
+    validate_resolution_observations(snapshot, verified_at)?;
+    let validate_fact = |evidence: &FactEvidence| -> Result<(), String> {
+        if evidence
+            .observed_at
+            .as_deref()
+            .is_some_and(|value| parse_utc(value).is_none_or(|time| time > verified))
+        {
+            return Err("invalid_or_future_observation_time".into());
+        }
+        Ok(())
+    };
+    if let Some(liquidity) = &snapshot.liquidity {
+        for category in &liquidity.categories {
+            validate_fact(&category.evidence)?;
+        }
+        for account in &liquidity.accounts {
+            for evidence in [
+                &account.currency_evidence,
+                &account.kind_evidence,
+                &account.ownership_evidence,
+                &account.balance_evidence,
+                &account.freshness_evidence,
+                &account.activity_evidence,
+                &account.schedule_evidence,
+                &account.holds_evidence,
+            ] {
+                validate_fact(evidence)?;
+            }
+            if let Some(credit) = &account.credit {
+                validate_fact(&credit.evidence)?;
+            }
+        }
+    }
+    for route in &card.liquidity_policy.transfer_routes {
+        validate_fact(&route.evidence)?;
+    }
+    Ok(())
+}
+
+// Replay only capture metadata already excluded from exact source hashes; financial and human facts stay intact.
+fn rebase_actual_postcondition_capture(
+    request: &mut PlanConsequentialActionRequest,
+) -> Result<(), String> {
+    let historical = request.evaluated_at.clone();
+    let snapshot = &mut request.decision_card_request.financial_snapshot;
+    let captured = snapshot.captured_at.clone();
+    if snapshot.source.ledger_backend != "actual" {
+        return Ok(());
+    }
+    for observation in &mut snapshot.observations {
+        let value = serde_json::to_value(&*observation).map_err(|error| error.to_string())?;
+        if actual_generated_observation_clock(&value, &captured) {
+            observation.observed_at = Some(historical.clone());
+        }
+    }
+    let rebase_fact = |evidence: &mut FactEvidence| {
+        if actual_fact_capture_clock(evidence, &captured) {
+            evidence.observed_at = Some(historical.clone());
+        }
+    };
+    if let Some(liquidity) = &mut snapshot.liquidity {
+        for category in &mut liquidity.categories {
+            rebase_fact(&mut category.evidence);
+        }
+        for account in &mut liquidity.accounts {
+            for evidence in [
+                &mut account.currency_evidence,
+                &mut account.kind_evidence,
+                &mut account.ownership_evidence,
+                &mut account.balance_evidence,
+                &mut account.freshness_evidence,
+                &mut account.activity_evidence,
+                &mut account.schedule_evidence,
+                &mut account.holds_evidence,
+            ] {
+                rebase_fact(evidence);
+            }
+            if let Some(credit) = &mut account.credit {
+                rebase_fact(&mut credit.evidence);
+            }
+        }
+    }
+    for route in &mut request
+        .decision_card_request
+        .liquidity_policy
+        .transfer_routes
+    {
+        rebase_fact(&mut route.evidence);
+    }
+    if snapshot.legacy_snapshot.snapshot_date == captured {
+        snapshot.legacy_snapshot.snapshot_date = historical.clone();
+    }
+    if snapshot.legacy_snapshot.actual_downloaded_at.as_deref() == Some(&captured) {
+        snapshot.legacy_snapshot.actual_downloaded_at = Some(historical.clone());
+    }
+    snapshot.captured_at = historical;
+    Ok(())
+}
+
 fn postcondition_freshness_invalidations_match(request: &VerifyConsequentialActionRequest) -> bool {
     let snapshot = &request.decision_card_request.financial_snapshot;
     let invalidated = &request.plan.source.invalidated_freshness_accounts;
@@ -4459,8 +5567,11 @@ fn postcondition_freshness_invalidations_match(request: &VerifyConsequentialActi
 }
 
 fn actual_capture_evidence(evidence: &FactEvidence, snapshot: &FinancialSnapshot) -> bool {
+    actual_fact_capture_clock(evidence, &snapshot.captured_at)
+}
+fn actual_fact_capture_clock(evidence: &FactEvidence, captured_at: &str) -> bool {
     evidence.source == FactSource::ActualLedger
-        && evidence.observed_at.as_deref() == Some(snapshot.captured_at.as_str())
+        && evidence.observed_at.as_deref() == Some(captured_at)
         && evidence.expires_at.is_none()
 }
 
@@ -4948,60 +6059,75 @@ fn normalize_actual_generated_observation_clocks(
         return;
     };
     for observation in observations {
-        let no_source_identity = observation.get("contentHash").is_none()
-            && observation.get("version").is_none()
-            && observation.get("ledgerEffect").is_none();
-        let generated = match observation["kind"].as_str() {
-            Some("account_collection_coverage" | "currency_compatibility") => {
-                observation["scope"]["kind"] == "global"
-                    && observation["state"] == "complete"
-                    && observation["evidence"]
-                        .as_array()
-                        .is_some_and(Vec::is_empty)
-            }
-            Some("account_coverage" | "account_type" | "account_balance") => {
-                let account_id = observation["scope"]["id"].as_str();
-                observation["scope"]["kind"] == "account"
-                    && observation["state"] == "complete"
-                    && account_id.is_some_and(|id| !id.is_empty())
-                    && observation["evidence"]
-                        .as_array()
-                        .is_some_and(|references| {
-                            references.len() == 1
-                                && references[0]["evidenceId"].as_str() == account_id
-                                && references[0]["kind"] == "account"
-                                && references[0]["authorized"] == true
-                                && references[0]["redaction"] == "visible"
-                        })
-            }
-            Some("pending_activity" | "uncleared_activity") => {
-                let account_id = observation["scope"]["id"].as_str();
-                observation["scope"]["kind"] == "account"
-                    && observation["state"] == "included"
-                    && account_id.is_some_and(|id| !id.is_empty())
-                    && observation["evidence"]
-                        .as_array()
-                        .is_some_and(|references| {
-                            references.len() == 1
-                                && references[0]["evidenceId"]
-                                    .as_str()
-                                    .is_some_and(|id| !id.is_empty())
-                                && references[0]["kind"] == "transaction"
-                                && references[0]["authorized"] == true
-                                && references[0]["redaction"] == "visible"
-                        })
-            }
-            _ => false,
-        };
-        if generated
-            && no_source_identity
-            && observation["observedAt"].as_str() == Some(captured_at)
-        {
+        if actual_generated_observation_clock(observation, captured_at) {
             if let Some(object) = observation.as_object_mut() {
                 object.remove("observedAt");
             }
         }
     }
+}
+fn actual_generated_observation_clock(observation: &Value, captured_at: &str) -> bool {
+    let no_source_identity = observation.get("contentHash").is_none()
+        && observation.get("version").is_none()
+        && observation.get("ledgerEffect").is_none();
+    let generated = match observation["kind"].as_str() {
+        Some("account_collection_coverage" | "currency_compatibility") => {
+            observation["scope"]["kind"] == "global"
+                && observation["state"] == "complete"
+                && observation["evidence"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+        }
+        Some("account_coverage" | "account_type" | "account_balance") => {
+            let account_id = observation["scope"]["id"].as_str();
+            observation["scope"]["kind"] == "account"
+                && observation["state"] == "complete"
+                && account_id.is_some_and(|id| !id.is_empty())
+                && observation["evidence"]
+                    .as_array()
+                    .is_some_and(|references| {
+                        references.len() == 1
+                            && references[0]["evidenceId"].as_str() == account_id
+                            && references[0]["kind"] == "account"
+                            && references[0]["authorized"] == true
+                            && references[0]["redaction"] == "visible"
+                    })
+        }
+        Some("transfer_ambiguity") => {
+            let transaction_id = observation["scope"]["id"].as_str();
+            observation["scope"]["kind"] == "transaction"
+                && observation["state"] == "ambiguous"
+                && transaction_id.is_some_and(|id| !id.is_empty())
+                && observation["evidence"]
+                    .as_array()
+                    .is_some_and(|references| {
+                        references.len() == 1
+                            && references[0]["evidenceId"].as_str() == transaction_id
+                            && references[0]["kind"] == "transaction"
+                            && references[0]["authorized"] == true
+                            && references[0]["redaction"] == "visible"
+                    })
+        }
+        Some("pending_activity" | "uncleared_activity") => {
+            let account_id = observation["scope"]["id"].as_str();
+            observation["scope"]["kind"] == "account"
+                && observation["state"] == "included"
+                && account_id.is_some_and(|id| !id.is_empty())
+                && observation["evidence"]
+                    .as_array()
+                    .is_some_and(|references| {
+                        references.len() == 1
+                            && references[0]["evidenceId"]
+                                .as_str()
+                                .is_some_and(|id| !id.is_empty())
+                            && references[0]["kind"] == "transaction"
+                            && references[0]["authorized"] == true
+                            && references[0]["redaction"] == "visible"
+                    })
+        }
+        _ => false,
+    };
+    generated && no_source_identity && observation["observedAt"].as_str() == Some(captured_at)
 }
 
 fn normalize_actual_ledger_fact_clock(evidence: &mut Value) {
@@ -5421,5 +6547,51 @@ mod temporal_debit_tests {
             &Money::new(1, "EUR"),
             &Money::new(-1, "USD")
         ));
+    }
+    #[test]
+    fn transfer_ambiguity_capture_clock_preserves_source_identity_and_authority() {
+        let captured = "2026-09-06T10:00:00Z";
+        let observation = serde_json::json!({
+            "kind":"transfer_ambiguity","scope":{"kind":"transaction","id":"transfer"},
+            "state":"ambiguous","observedAt":captured,
+            "evidence":[{"evidenceId":"transfer","kind":"transaction","authorized":true,"redaction":"visible"}]
+        });
+        let mut generated = serde_json::json!([observation.clone()]);
+        super::normalize_actual_generated_observation_clocks(&mut generated, captured, true);
+        assert!(generated[0].get("observedAt").is_none());
+        let mut expected = observation.clone();
+        expected.as_object_mut().unwrap().remove("observedAt");
+        assert_eq!(generated[0], expected);
+        for (field, value) in [
+            ("observedAt", serde_json::json!("2026-09-06T09:30:00Z")),
+            ("state", serde_json::json!("missing")),
+            ("contentHash", serde_json::json!("changed")),
+            ("version", serde_json::json!("v2")),
+            (
+                "scope",
+                serde_json::json!({"kind":"transaction","id":"other"}),
+            ),
+            (
+                "evidence",
+                serde_json::json!([{"evidenceId":"other","kind":"transaction","authorized":true,"redaction":"visible"}]),
+            ),
+            (
+                "evidence",
+                serde_json::json!([{"evidenceId":"transfer","kind":"transaction","authorized":false,"redaction":"visible"}]),
+            ),
+            (
+                "evidence",
+                serde_json::json!([{"evidenceId":"transfer","kind":"transaction","authorized":true,"redaction":"redacted"}]),
+            ),
+        ] {
+            let mut source = observation.clone();
+            source[field] = value;
+            let mut normalized = serde_json::json!([source.clone()]);
+            super::normalize_actual_generated_observation_clocks(&mut normalized, captured, true);
+            assert_eq!(normalized[0], source);
+        }
+        let mut external = serde_json::json!([observation.clone()]);
+        super::normalize_actual_generated_observation_clocks(&mut external, captured, false);
+        assert_eq!(external[0], observation);
     }
 }

@@ -1,0 +1,411 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/wallet-statement-v1.json",
+  "title": "Human-attested bounded wallet statements v1",
+  "description": "Local human assertions only; native enforces exact activity identities, checked daily conservation, scoped coverage and canonical anchors. This contract authenticates neither issuer nor actor.",
+  "$ref": "#/$defs/WalletStatementProof",
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "Currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "Date": {
+      "type": "string",
+      "pattern": "^(?:(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29|[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8])))$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "pattern": "^(?:(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29|[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8])))T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$"
+    },
+    "Money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minorUnits", "currency"],
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]{0,17}|(?:[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807))$"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    },
+    "WalletStatementSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentId", "contentHash", "parserVersion"],
+      "properties": {
+        "documentId": {
+          "$ref": "#/$defs/Id"
+        },
+        "contentHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "parserVersion": {
+          "$ref": "#/$defs/Id"
+        }
+      }
+    },
+    "WalletStatementActivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observationId",
+        "documentId",
+        "contentHash",
+        "parserVersion",
+        "normalizedFieldsHash"
+      ],
+      "properties": {
+        "observationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "documentId": {
+          "$ref": "#/$defs/Id"
+        },
+        "contentHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "parserVersion": {
+          "$ref": "#/$defs/Id"
+        },
+        "normalizedFieldsHash": {
+          "$ref": "#/$defs/Hash"
+        }
+      }
+    },
+    "WalletStatementProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proofId",
+        "authorityKind",
+        "statement",
+        "walletId",
+        "currency",
+        "calendarBasis",
+        "startDate",
+        "endDate",
+        "openingBalance",
+        "closingBalance",
+        "activityManifest",
+        "actorId",
+        "membershipId",
+        "policyVersion",
+        "reviewedAt"
+      ],
+      "properties": {
+        "proofId": {
+          "$ref": "#/$defs/Id"
+        },
+        "authorityKind": {
+          "const": "human_attested_statement"
+        },
+        "statement": {
+          "$ref": "#/$defs/WalletStatementSource"
+        },
+        "walletId": {
+          "$ref": "#/$defs/Id"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "calendarBasis": {
+          "const": "statement_printed_date"
+        },
+        "startDate": {
+          "$ref": "#/$defs/Date"
+        },
+        "endDate": {
+          "$ref": "#/$defs/Date"
+        },
+        "openingBalance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "closingBalance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activityManifest": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WalletStatementActivity"
+          },
+          "maxItems": 10000
+        },
+        "actorId": {
+          "$ref": "#/$defs/Id"
+        },
+        "membershipId": {
+          "$ref": "#/$defs/Id"
+        },
+        "policyVersion": {
+          "$ref": "#/$defs/Id"
+        },
+        "reviewedAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "not": {
+        "properties": {
+          "openingBalance": {
+            "type": "null"
+          },
+          "closingBalance": {
+            "type": "null"
+          }
+        },
+        "required": ["openingBalance", "closingBalance"]
+      }
+    },
+    "WalletStatementBalanceAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "walletId",
+        "amount",
+        "asOfDate",
+        "boundary",
+        "proofIds",
+        "proofSetHash",
+        "activityManifestHash",
+        "evidenceIds"
+      ],
+      "properties": {
+        "walletId": {
+          "$ref": "#/$defs/Id"
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "asOfDate": {
+          "$ref": "#/$defs/Date"
+        },
+        "boundary": {
+          "enum": ["before_day_activity", "after_day_activity"]
+        },
+        "proofIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1
+        },
+        "proofSetHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "activityManifestHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "WalletStatementCoverageInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startDate",
+        "endDate",
+        "proofIds",
+        "evidenceIds",
+        "openingBalance",
+        "closingBalance",
+        "state",
+        "reasonCodes"
+      ],
+      "properties": {
+        "startDate": {
+          "$ref": "#/$defs/Date"
+        },
+        "endDate": {
+          "$ref": "#/$defs/Date"
+        },
+        "proofIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "openingBalance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "closingBalance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": ["covered", "invalid"]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        }
+      }
+    },
+    "WalletStatementCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intervals", "uncoveredObservationIds", "blockedObservationIds"],
+      "properties": {
+        "intervals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WalletStatementCoverageInterval"
+          }
+        },
+        "uncoveredObservationIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "blockedObservationIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        }
+      }
+    },
+    "WalletStatementPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "walletId",
+        "currency",
+        "startDate",
+        "endDate",
+        "activityManifest",
+        "activityManifestHash",
+        "netChange",
+        "inflows",
+        "outflows",
+        "excludedObservationIds",
+        "reasonCodes"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "walletId": {
+          "$ref": "#/$defs/Id"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "startDate": {
+          "$ref": "#/$defs/Date"
+        },
+        "endDate": {
+          "$ref": "#/$defs/Date"
+        },
+        "activityManifest": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WalletStatementActivity"
+          },
+          "maxItems": 10000
+        },
+        "activityManifestHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "netChange": {
+          "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/Money"
+        },
+        "inflows": {
+          "$ref": "#/$defs/Money"
+        },
+        "outflows": {
+          "$ref": "#/$defs/Money"
+        },
+        "excludedObservationIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        }
+      }
+    },
+    "DeriveWalletStatementPreviewRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "evidence", "walletId", "startDate", "endDate"],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "evidence": {
+          "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/TransactionEvidenceRequest"
+        },
+        "walletId": {
+          "$ref": "#/$defs/Id"
+        },
+        "startDate": {
+          "$ref": "#/$defs/Date"
+        },
+        "endDate": {
+          "$ref": "#/$defs/Date"
+        }
+      }
+    }
+  }
+}

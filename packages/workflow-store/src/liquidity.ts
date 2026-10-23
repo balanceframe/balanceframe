@@ -4107,6 +4107,24 @@ export class LiquidityWorkflow {
           });
       }
   }
+  /** Check an archived intent version without returning content or extending completion expiry. */
+  hasCurrentSpendSessionVersion(input: LiquidityActor & { id: string; expectedVersion: number; now: string }): boolean {
+    try {
+      if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) return false;
+      this.budget(input, 'session');
+      const row = this.db.prepare('SELECT record,space_id,membership_id FROM spend_sessions WHERE budget_id=? AND id=?')
+        .get(input.budgetId, input.id) as { record: string; space_id: string | null; membership_id: string | null } | undefined;
+      const context = this.currentMemberContext(input);
+      if (!row || !context || row.space_id !== context.spaceId || row.membership_id !== context.membershipId) return false;
+      const source = sessionObject(JSON.parse(row.record));
+      if (source.actorId !== input.actorId || source.version !== input.expectedVersion) return false;
+      this.sessionResources(input, { items: Array.isArray(source.items) ? source.items : [],
+        accountId: optionalString(source.accountId), adjustments: source.adjustments, warningThresholds: source.warningThresholds });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   getSpendSession(input: LiquidityActor & { id: string; now: string }): SpendSession | null {
     this.budget(input, 'session');
     const row = this.db

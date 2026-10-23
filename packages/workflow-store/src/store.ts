@@ -1,3 +1,5 @@
+import { migrateSpendSessionEvidence } from './spend-session-evidence.js';
+import { migrateEvidenceItemRules } from './evidence-item-rules.js';
 /**
  * SQLite-backed {@link WorkflowStore} implementation.
  *
@@ -83,6 +85,12 @@ import type { Database as DatabaseType, Statement } from 'better-sqlite3';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { constants, existsSync, lstatSync, openSync, closeSync, realpathSync, unlinkSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
+import {
+  TransactionEvidenceWorkflow,
+  migrateTransactionEvidence,
+  migrateEvidenceOwnerNamespace,
+  migrateEvidenceLedgerProvenance,
+} from './transaction-evidence.js';
 import { MerchantWorkflow, reconcileMerchantRestore, redactMerchantDerivedCopies } from './merchant.js';
 import { migrateMerchant } from './merchant-migration.js';
 import { assertReviewRuleSetScope, migrateReviewRuleSets, migrateReviewRuleBlocks, migrateReviewRuleParts, prepareReviewRuleSets, resolveReviewRuleSet } from './review-rule-sets.js';
@@ -1265,6 +1273,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
   readonly governance: SpaceGovernance;
   readonly liquidity: LiquidityWorkflow;
   readonly merchant: MerchantWorkflow;
+  readonly evidence: TransactionEvidenceWorkflow;
   constructor(filename: string = ':memory:') {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
@@ -1292,6 +1301,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.governance = new SpaceGovernance(this.db);
     this.liquidity = new LiquidityWorkflow(this.db, (row) => rowToProposal(row as ProposalRow), this.governance);
     this.merchant = new MerchantWorkflow(this.db);
+    this.evidence = new TransactionEvidenceWorkflow(this.db);
   }
   /** Release the database connection. */
   close(): void {
@@ -1336,7 +1346,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
       // VACUUM INTO includes committed WAL pages and creates a consistent, synchronous SQLite copy.
       source.prepare('VACUUM INTO ?').run(destinationPath);
       restored = new SqliteWorkflowStore(destinationPath);
-      restored.db.transaction(() => reconcileMerchantRestore(restored!.db, input.now)).immediate();
+      restored.db
+        .transaction(() => {
+          reconcileMerchantRestore(restored!.db, input.now);
+          restored!.evidence.quarantineRestore(input.now);
+        })
+        .immediate();
       restored.db.pragma('wal_checkpoint(TRUNCATE)');
       return restored;
     } catch (error) {
@@ -2023,6 +2038,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     migrateReviewRuleParts,
     // Version 27: Durable writer fences for session completion.
     migrateSessionCompletionWriteFences,
+    migrateTransactionEvidence,
+    migrateEvidenceOwnerNamespace,
+    migrateEvidenceLedgerProvenance,
+    migrateEvidenceItemRules,
+    migrateSpendSessionEvidence,
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -5791,14 +5811,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
       const privateReadResources = [...new Map([
         ...facts.resources,
         ...(sourceReadFacts?.resources.filter((resource) => resource.resourceKind !== 'budget') ?? []),
-      ].map((resource) => [`${resource.resourceKind}:${resource.resourceId}`, resource])).values()];
-      let disclosure: GovernanceFinancialDisclosure | null;
-      try {
+      ].map((resource) => [`${resource.resourceKind}:${resource.resourceId}`, resource])).values(),
+        ];
+        let disclosure: GovernanceFinancialDisclosure | null;
+        try {
         disclosure = deriveProposalDisclosureTotals(operation, payload, preconditions, projection);
       } catch {
         disclosure = null;
       }
-      const authorizePrivateRead = (
+        const authorizePrivateRead = (
         required: GovernanceAuthorizationInput['required'],
         limits?: GovernanceReadDisclosureLimits,
       ) => {
@@ -5829,7 +5850,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
           ? this.governance.authorize(sourceRequest)
           : this.governance.authorizeReadDisclosure(sourceRequest, limits);
       };
-      const fullReadRequired: GovernanceAuthorizationInput['required'] = [
+        const fullReadRequired: GovernanceAuthorizationInput['required'] = [
         {
           capability: 'full-read', resourceKind: 'budget',
           resourceId: proposal.budget_id, visibility: 'resource',
@@ -5842,22 +5863,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
             resource.resourceKind !== 'rule')
           .map((resource) => ({ ...resource, capability: 'full-read' })),
       ];
-      const exactReadRequired = privateReadResources.map((resource) => ({
+        const exactReadRequired = privateReadResources.map((resource) => ({
         ...resource, capability: 'full-read',
       }));
-      const fullReadResource = !agentPrincipal && membership
+        const fullReadResource = !agentPrincipal && membership
         ? authorizePrivateRead(fullReadRequired) : null;
-      const exactPrivateRead = !agentPrincipal && membership && privateReadResources.length > 0
+        const exactPrivateRead = !agentPrincipal && membership && privateReadResources.length > 0
         ? authorizePrivateRead(exactReadRequired) : null;
-      const metadataPrivateReadAllowed =
+        const metadataPrivateReadAllowed =
         fullReadResource?.allowed === true || exactPrivateRead?.allowed === true;
-      const admitsDisclosure = (collection: GovernanceFinancialDisclosure): boolean =>
-        disclosure !== null && (
-          fullReadResource?.allowed === true && authorizePrivateRead(fullReadRequired, { collection, subject: disclosure }).allowed ||
-          exactPrivateRead?.allowed === true && authorizePrivateRead(exactReadRequired, { collection, subject: disclosure }).allowed
-        );
-      const fullReadAllowed = disclosure !== null && admitsDisclosure(disclosure);
-      if (
+        const admitsDisclosure = (collection: GovernanceFinancialDisclosure): boolean =>
+          disclosure !== null &&
+          ((fullReadResource?.allowed === true && authorizePrivateRead(fullReadRequired, { collection, subject: disclosure }).allowed) ||
+            (exactPrivateRead?.allowed === true && authorizePrivateRead(exactReadRequired, { collection, subject: disclosure }).allowed));
+        const fullReadAllowed = disclosure !== null && admitsDisclosure(disclosure);
+        if (
         !metadataPrivateReadAllowed &&
         !approvalRead?.allowed &&
         !executionRead?.allowed &&
@@ -5865,7 +5885,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       )
         throw new ProposalAcquisitionError('authorization_denied', 'Current exact proposal read authority unavailable');
 
-      const eligible = ruleOverrideCurrent
+        const eligible = ruleOverrideCurrent
         ? this.eligibleHumanApprovals({
             proposalId: proposal.id,
             payloadHash: proposal.payload_hash,
@@ -5878,7 +5898,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
             now: input.now,
           })
         : [];
-      const executionAdmission = this.authorizeGenericProposal({
+        const executionAdmission = this.authorizeGenericProposal({
         actorId: input.actorId,
         auth: input.auth,
         spaceId: input.spaceId,
@@ -5894,23 +5914,23 @@ export class SqliteWorkflowStore implements WorkflowStore {
         payload,
         now: input.now,
       });
-      const financialApprovers = operation === 'consequential_action'
+        const financialApprovers = operation === 'consequential_action'
         ? this.consequentialActionRequiredApprovers(proposal.budget_id, payload, preconditions, policy, facts)
         : null;
-      if (operation === 'consequential_action' && financialApprovers === null)
+        if (operation === 'consequential_action' && financialApprovers === null)
         throw new ProposalAcquisitionError('policy_version_mismatch', 'Current financial approval policy differs from source');
-      const requiredApprovers = Math.max(
-        requiredProposalApprovers(
-          operation === 'consequential_action'
-            ? approvalRead ?? requesterRead ?? executionRead ?? executionAdmission
-            : executionAdmission,
-        ),
-        financialApprovers ?? 0,
-      );
-      const proposalExpiresAt = timestampMillis(proposal.expires_at);
-      let readProposal = proposal;
-      let actionPhaseCurrent = true;
-      if (operation === 'consequential_action') {
+        const requiredApprovers = Math.max(
+          requiredProposalApprovers(
+            operation === 'consequential_action'
+              ? (approvalRead ?? requesterRead ?? executionRead ?? executionAdmission)
+              : executionAdmission,
+          ),
+          financialApprovers ?? 0,
+        );
+        const proposalExpiresAt = timestampMillis(proposal.expires_at);
+        let readProposal = proposal;
+        let actionPhaseCurrent = true;
+        if (operation === 'consequential_action') {
         const actionState = this.consequentialActionState(proposal);
         actionPhaseCurrent = actionState.phase === 'proposed' || actionState.phase === 'approved';
         if (actionPhaseCurrent) {
@@ -5919,7 +5939,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
             readProposal = this.updateConsequentialActionState(proposal, { ...actionState, phase });
         }
       }
-      const proposalCurrent =
+        const proposalCurrent =
         proposal.governance_policy_version === policy.version &&
         proposal.superseded_at === null &&
         proposalExpiresAt !== null &&
@@ -5927,7 +5947,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         actionPhaseCurrent &&
         ruleOverrideCurrent &&
         this.proposalReviewProvenanceMatches(proposal);
-      const disposition = !proposalCurrent
+        const disposition = !proposalCurrent
         ? {
             kind: 'denied' as const,
             reason: proposal.governance_policy_version !== policy.version
@@ -5937,7 +5957,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         : eligible.length < requiredApprovers
           ? { kind: 'approval_required' as const }
           : { kind: 'authorized_without_approval' as const };
-      const executionWithApprovals =
+        const executionWithApprovals =
         proposalCurrent && eligible.length >= requiredApprovers
           ? this.authorizeGenericProposal({
               actorId: input.actorId,
@@ -5957,15 +5977,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
               verifiedHumanApproval: true,
             })
           : null;
-      const canExecute =
+        const canExecute =
         executionWithApprovals?.allowed === true &&
         executionWithApprovals.disposition.kind === 'authorized_without_approval';
 
-      const canApprove = !agentPrincipal && proposalCurrent && approvalRead?.allowed === true;
-      const requestId = input.requestId ?? randomUUID();
-      const readAdmission = [fullReadResource, exactPrivateRead, approvalRead, executionRead, requesterRead]
+        const canApprove = !agentPrincipal && proposalCurrent && approvalRead?.allowed === true;
+        const requestId = input.requestId ?? randomUUID();
+        const readAdmission = [fullReadResource, exactPrivateRead, approvalRead, executionRead, requesterRead]
         .find((authorization) => authorization?.allowed);
-      this.stmt.insertAudit.run({
+        this.stmt.insertAudit.run({
         id: randomUUID(),
         classification: 'authorization_check',
         timestamp: input.now,
@@ -5992,7 +6012,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         }),
         isError: 0,
       });
-      const summary: ProposalApprovalSummary = {
+        const summary: ProposalApprovalSummary = {
         currentGovernancePolicyVersion: policy.version,
         requesterMembershipCurrent: true,
         privateEnvelopeVisible: fullReadAllowed,
@@ -6008,20 +6028,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
         canApprove,
         canExecute,
       };
-      return {
-        read: {
-          proposal: rowToProposal(readProposal, payload as GenericActionProposal['payload']) as GenericActionProposal,
-          preconditions: fullReadAllowed ? preconditions as Readonly<Record<string, unknown>> : null,
-          summary,
-        },
-        disclosure,
-        privateReadEligible: metadataPrivateReadAllowed,
-        admitsDisclosure,
-      };
-    }).immediate();
+        return {
+          read: {
+            proposal: rowToProposal(readProposal, payload as GenericActionProposal['payload']) as GenericActionProposal,
+            preconditions: fullReadAllowed
+              ? (preconditions as Readonly<Record<string, unknown>>)
+              : null,
+            summary,
+          },
+          disclosure,
+          privateReadEligible: metadataPrivateReadAllowed,
+          admitsDisclosure,
+        };
+      })
+      .immediate();
   }
-
-
 
   async acquireProposalExecution(
     input: AcquireProposalExecutionInput,
@@ -6039,45 +6060,46 @@ export class SqliteWorkflowStore implements WorkflowStore {
     input: AcquireProposalExecutionInput,
     acquisitionAuditId?: string,
   ): ProposalExecutionAcquisition {
-    return this.db.transaction(() => {
-      const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
-      if (!proposal || !isGenericProposalOperation(proposal.operation))
+    return this.db
+      .transaction(() => {
+        const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
+        if (!proposal || !isGenericProposalOperation(proposal.operation))
         throw new ProposalAcquisitionError('authorization_denied', 'Generic proposal not found');
-      const operation = proposal.operation as GenericProposalOperation;
-      const now = input.now ?? nowISO();
-      const nowMillis = timestampMillis(now);
-      const expiresAt = timestampMillis(proposal.expires_at);
-      const existingAcquisition = this.stmt.selectProposalExecutionAcquisition.get(
+        const operation = proposal.operation as GenericProposalOperation;
+        const now = input.now ?? nowISO();
+        const nowMillis = timestampMillis(now);
+        const expiresAt = timestampMillis(proposal.expires_at);
+        const existingAcquisition = this.stmt.selectProposalExecutionAcquisition.get(
         input.proposalId,
       ) as
         | { proposal_id: string; idempotency_key: string; actor_id: string; acquired_at: string }
         | undefined;
-      const existingIdempotency =
+        const existingIdempotency =
         existingAcquisition?.idempotency_key === input.idempotencyKey
           ? (this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined)
           : undefined;
-      const completedReplay =
+        const completedReplay =
         acquisitionAuditId === undefined &&
         existingAcquisition?.actor_id === input.actorId &&
         existingIdempotency !== undefined &&
         existingIdempotency.proposal_id === input.proposalId &&
         existingIdempotency.operation === operation &&
         existingIdempotency.completed !== 0;
-      if (
+        if (
         nowMillis === null ||
         expiresAt === null ||
         (expiresAt <= nowMillis && !completedReplay)
       )
         throw new ProposalAcquisitionError('proposal_expired', 'Proposal is expired');
-      if (proposal.superseded_at && !completedReplay)
+        if (proposal.superseded_at && !completedReplay)
         throw new ProposalAcquisitionError('proposal_superseded', 'Proposal is superseded');
-      if (proposal.policy_version !== GENERIC_MUTATION_POLICY_VERSION)
+        if (proposal.policy_version !== GENERIC_MUTATION_POLICY_VERSION)
         throw new ProposalAcquisitionError('policy_version_mismatch', 'Generic mutation policy version changed');
-      if (!this.proposalHashMatches(proposal) || input.payloadHash !== proposal.payload_hash)
+        if (!this.proposalHashMatches(proposal) || input.payloadHash !== proposal.payload_hash)
         throw new ProposalAcquisitionError('payload_hash_mismatch', 'Proposal hash does not match stored envelope');
-      if (input.actorId !== input.auth.actorId || !this.operationalAuthMatches(input.auth, input.actorId, now))
+        if (input.actorId !== input.auth.actorId || !this.operationalAuthMatches(input.auth, input.actorId, now))
         throw new ProposalAcquisitionError('authorization_denied', 'Executor does not match trusted credentials');
-      if (
+        if (
         input.auth.method === 'api-key' &&
         input.auth.principalType === 'agent' &&
         (proposal.requester_delegation_id !== null || proposal.requester_delegation_version !== null) &&
@@ -6085,17 +6107,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
           proposal.requester_delegation_version !== input.auth.delegationVersion)
       )
         throw new ProposalAcquisitionError('authorization_denied', 'Agent proposal origin delegation differs');
-      if (!input.idempotencyKey.trim())
+        if (!input.idempotencyKey.trim())
         throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Idempotency key is required');
 
-      const spaceId = proposal.space_id;
-      const requesterMembershipId = proposal.requester_membership_id;
-      const governancePolicyVersion = proposal.governance_policy_version;
-      if (!spaceId || !requesterMembershipId || !governancePolicyVersion)
+        const spaceId = proposal.space_id;
+        const requesterMembershipId = proposal.requester_membership_id;
+        const governancePolicyVersion = proposal.governance_policy_version;
+        if (!spaceId || !requesterMembershipId || !governancePolicyVersion)
         throw new ProposalAcquisitionError('authorization_denied', 'Proposal lacks trusted governance provenance');
-      const space = this.governance.getSpace({ spaceId });
-      const policy = this.governance.getPolicy({ spaceId });
-      if (
+        const space = this.governance.getSpace({ spaceId });
+        const policy = this.governance.getPolicy({ spaceId });
+        if (
         !space ||
         space.deletedAt !== null ||
         space.budgetId !== proposal.budget_id ||
@@ -6104,45 +6126,47 @@ export class SqliteWorkflowStore implements WorkflowStore {
         input.governancePolicyVersion !== governancePolicyVersion
       )
         throw new ProposalAcquisitionError('policy_version_mismatch', 'Current governance policy differs from proposal');
-      if (!this.requesterMembershipCurrent(proposal, now))
+        if (!this.requesterMembershipCurrent(proposal, now))
         throw new ProposalAcquisitionError('authorization_denied', 'Proposal requester membership is no longer current');
 
-      let payload: unknown;
-      let preconditions: unknown;
-      try {
+        let payload: unknown;
+        let preconditions: unknown;
+        try {
         payload = JSON.parse(proposal.payload) as unknown;
         preconditions = JSON.parse(proposal.preconditions) as unknown;
       } catch {
         throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal envelope is invalid');
       }
-      let facts: ProposalAuthorizationFacts;
-      try {
+        let facts: ProposalAuthorizationFacts;
+        try {
         facts = deriveProposalAuthorizationFacts(operation, payload, preconditions);
       } catch {
         throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal authorization facts are invalid');
       }
-      let actionPlan: ConsequentialActionPayload['plan'] | null = null;
-      if (operation === 'consequential_action') {
-        try {
-          actionPlan = consequentialActionPlanFromPayload(payload);
-          const actionState = this.consequentialActionState(proposal);
-          if (actionPlan.idempotencyKey !== input.idempotencyKey ||
+        let actionPlan: ConsequentialActionPayload['plan'] | null = null;
+        if (operation === 'consequential_action') {
+          try {
+            actionPlan = consequentialActionPlanFromPayload(payload);
+            const actionState = this.consequentialActionState(proposal);
+            if (
+              actionPlan.idempotencyKey !== input.idempotencyKey ||
               actionPlan.expiresAt !== proposal.expires_at ||
-              acquisitionAuditId === undefined && !existingAcquisition &&
+              (acquisitionAuditId === undefined && !existingAcquisition &&
                 !['proposed', 'approved'].includes(actionState.phase))
-            throw new Error('Action identity or lifecycle phase differs');
-        } catch {
+            )
+              throw new Error('Action identity or lifecycle phase differs');
+          } catch {
           throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Consequential-action identity is not executable');
         }
-      }
-      if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, preconditions, policy.version, now))
+        }
+        if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, preconditions, policy.version, now))
         throw new ProposalAcquisitionError('authorization_denied', 'Proposal origin authority is no longer current');
-      const serializedProposal = JSON.stringify({ operation, payload, preconditions });
-      if (serializedProposal !== input.serialisedEffect)
+        const serializedProposal = JSON.stringify({ operation, payload, preconditions });
+        if (serializedProposal !== input.serialisedEffect)
         throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Execution effect differs from proposal');
-      const capability = operation === 'set_category' ? 'categorization:execute' :
+        const capability = operation === 'set_category' ? 'categorization:execute' :
         operation === 'consequential_action' ? 'consequential_action:execute' : 'rule:execute';
-      const authorization = this.authorizeGenericProposal({
+        const authorization = this.authorizeGenericProposal({
         actorId: input.actorId,
         auth: input.auth,
         spaceId,
@@ -6158,51 +6182,54 @@ export class SqliteWorkflowStore implements WorkflowStore {
         payload,
         now,
       });
-      if (!authorization.allowed)
+        if (!authorization.allowed)
         throw new ProposalAcquisitionError('authorization_denied', authorization.reason);
 
-      if (existingAcquisition) {
-        if (existingAcquisition.actor_id !== input.actorId)
+        if (existingAcquisition) {
+          if (existingAcquisition.actor_id !== input.actorId)
           throw new ProposalAcquisitionError('authorization_denied', 'Execution replay is unavailable');
-        if (existingAcquisition.idempotency_key !== input.idempotencyKey)
+          if (existingAcquisition.idempotency_key !== input.idempotencyKey)
           throw new ProposalAcquisitionError('idempotency_in_progress', 'Proposal execution was already acquired');
-        const existing = existingIdempotency;
-        if (
+          const existing = existingIdempotency;
+          if (
           !existing ||
           existing.proposal_id !== input.proposalId ||
           existing.operation !== operation ||
           existing.serialised_effect !== input.serialisedEffect
         )
           throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Execution replay does not match its claim');
-        if (acquisitionAuditId !== undefined) {
-          const state = operation === 'consequential_action' ? this.consequentialActionState(proposal) : null;
-          const acquisition = state?.acquisition;
-          if (operation === 'consequential_action' &&
+          if (acquisitionAuditId !== undefined) {
+            const state = operation === 'consequential_action' ? this.consequentialActionState(proposal) : null;
+            const acquisition = state?.acquisition;
+            if (operation === 'consequential_action' &&
               (state?.phase !== 'write_intent' ||
                acquisition?.actorId !== input.actorId ||
                acquisition.payloadHash !== proposal.payload_hash ||
                acquisition.idempotencyKey !== input.idempotencyKey ||
                acquisition.acquisitionAuditId !== acquisitionAuditId))
             throw new ProposalAcquisitionError('authorization_denied', 'Exact durable action acquisition is no longer active');
-          const leaseExpiresAt = existing.lease_expires_at === null
+            const leaseExpiresAt = existing.lease_expires_at === null
             ? null : timestampMillis(existing.lease_expires_at);
-          if (existing.completed !== 0 || existing.idempotency_status !== 'in_progress' ||
-              operation !== 'consequential_action' && (leaseExpiresAt === null || leaseExpiresAt <= nowMillis) ||
-              existing.executed_at !== existingAcquisition.acquired_at)
-            throw new ProposalAcquisitionError('authorization_denied', 'Acquired execution lease is no longer active');
-          if (!this.proposalReviewProvenanceMatches(proposal) ||
+            if (
+              existing.completed !== 0 ||
+              existing.idempotency_status !== 'in_progress' ||
+              (operation !== 'consequential_action' && (leaseExpiresAt === null || leaseExpiresAt <= nowMillis)) ||
+              existing.executed_at !== existingAcquisition.acquired_at
+            )
+              throw new ProposalAcquisitionError('authorization_denied', 'Acquired execution lease is no longer active');
+            if (!this.proposalReviewProvenanceMatches(proposal) ||
               !this.ruleOverrideSnapshotMatches(spaceId, proposal.budget_id, payload, preconditions))
             throw new ProposalAcquisitionError('authorization_denied', 'Acquired proposal provenance changed');
-          const audit = this.stmt.selectAuditById.get(acquisitionAuditId) as AuditRow | undefined;
-          if (!audit || audit.classification !== 'execution_started' || audit.is_error !== 0 ||
+            const audit = this.stmt.selectAuditById.get(acquisitionAuditId) as AuditRow | undefined;
+            if (!audit || audit.classification !== 'execution_started' || audit.is_error !== 0 ||
               audit.actor_id !== input.actorId || audit.proposal_id !== input.proposalId ||
               audit.idempotency_key !== input.idempotencyKey || audit.operation !== operation ||
               audit.payload_hash !== proposal.payload_hash || audit.budget_id !== proposal.budget_id ||
               audit.policy_version !== proposal.policy_version ||
               audit.timestamp !== existingAcquisition.acquired_at)
             throw new ProposalAcquisitionError('authorization_denied', 'Exact acquired execution audit does not match');
-          let approvalIds: string[];
-          try {
+            let approvalIds: string[];
+            try {
             const result = JSON.parse(audit.result) as unknown;
             if (!isPlainRecord(result) || result.proposalId !== input.proposalId ||
                 !Array.isArray(result.approvalIds) ||
@@ -6213,29 +6240,29 @@ export class SqliteWorkflowStore implements WorkflowStore {
           } catch {
             throw new ProposalAcquisitionError('authorization_denied', 'Acquired approval audit is invalid');
           }
-          const approvals: ApprovalRow[] = [];
-          for (const id of approvalIds) {
+            const approvals: ApprovalRow[] = [];
+            for (const id of approvalIds) {
             const approval = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
             if (!approval || approval.status !== 'consumed' ||
                 approval.consumed_at !== existingAcquisition.acquired_at)
               throw new ProposalAcquisitionError('approval_required', 'Acquired approval is no longer current');
             approvals.push(approval);
           }
-          const eligible = this.eligibleHumanApprovals({
+            const eligible = this.eligibleHumanApprovals({
             proposalId: input.proposalId, payloadHash: proposal.payload_hash, spaceId,
             policyVersion: policy.version, operation, budgetId: proposal.budget_id, facts, payload, now,
             approvals,
           });
-          const financialApprovers = operation === 'consequential_action'
-            ? this.consequentialActionRequiredApprovers(proposal.budget_id, payload, preconditions, policy, facts)
-            : null;
-          if (eligible.length !== approvals.length ||
+            const financialApprovers = operation === 'consequential_action'
+        ? this.consequentialActionRequiredApprovers(proposal.budget_id, payload, preconditions, policy, facts)
+        : null;
+            if (eligible.length !== approvals.length ||
               eligible.length < Math.max(
                 requiredProposalApprovers(authorization),
                 financialApprovers ?? 0,
               ))
             throw new ProposalAcquisitionError('approval_required', 'Acquired human approval authority changed');
-          const executionAuthorization = this.authorizeGenericProposal({
+            const executionAuthorization = this.authorizeGenericProposal({
             actorId: input.actorId, auth: input.auth, spaceId, policyVersion: policy.version,
             phase: 'execute', capability, operation, budgetId: proposal.budget_id, facts, payload,
             ...(operation === 'consequential_action'
@@ -6244,35 +6271,35 @@ export class SqliteWorkflowStore implements WorkflowStore {
             now,
             verifiedHumanApproval: true,
           });
-          if (!executionAuthorization.allowed)
-            throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
-          this.assertBudgetMutationOwnerAvailable(proposal.budget_id, proposal.id);
-        }
-        return {
+            if (!executionAuthorization.allowed)
+        throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
+            this.assertBudgetMutationOwnerAvailable(proposal.budget_id, proposal.id);
+          }
+          return {
           claim: { record: rowToIdempotency(existing), isOwner: false },
           approvals: [],
           auditRecord: null,
         };
-      }
-      if (acquisitionAuditId !== undefined)
+        }
+        if (acquisitionAuditId !== undefined)
         throw new ProposalAcquisitionError('authorization_denied', 'Execution authority was not acquired');
-      if (!this.proposalReviewProvenanceMatches(proposal))
+        if (!this.proposalReviewProvenanceMatches(proposal))
         throw new ProposalAcquisitionError('authorization_denied', 'Proposal review provenance is no longer current');
 
-      if (!this.ruleOverrideSnapshotMatches(spaceId, proposal.budget_id, payload, preconditions))
+        if (!this.ruleOverrideSnapshotMatches(spaceId, proposal.budget_id, payload, preconditions))
         throw new ProposalAcquisitionError('authorization_denied', 'Current rule override state differs from the proposal');
-      const existingKey = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined;
-      if (existingKey)
+        const existingKey = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined;
+        if (existingKey)
         throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Idempotency key is already in use');
-      const priorClaim = this.stmt.selectIdempotencyByProposalOp.get({
+        const priorClaim = this.stmt.selectIdempotencyByProposalOp.get({
         proposalId: input.proposalId,
         operation,
       }) as IdempotencyRow | undefined;
-      if (priorClaim)
+        if (priorClaim)
         throw new ProposalAcquisitionError('idempotency_in_progress', 'Proposal execution was already claimed');
-      this.assertBudgetMutationOwnerAvailable(proposal.budget_id, proposal.id);
+        this.assertBudgetMutationOwnerAvailable(proposal.budget_id, proposal.id);
 
-      const eligible = this.eligibleHumanApprovals({
+        const eligible = this.eligibleHumanApprovals({
         proposalId: input.proposalId,
         payloadHash: proposal.payload_hash,
         spaceId,
@@ -6284,14 +6311,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
         now,
       });
 
-      const financialApprovers = operation === 'consequential_action'
+        const financialApprovers = operation === 'consequential_action'
         ? this.consequentialActionRequiredApprovers(proposal.budget_id, payload, preconditions, policy, facts)
         : null;
-      if (operation === 'consequential_action' && financialApprovers === null)
+        if (operation === 'consequential_action' && financialApprovers === null)
         throw new ProposalAcquisitionError('policy_version_mismatch', 'Current financial approval policy differs from source');
-      const requiredApprovers = Math.max(requiredProposalApprovers(authorization), financialApprovers ?? 0);
-      let selectedApprovals = eligible;
-      if (input.approvalId) {
+        const requiredApprovers = Math.max(requiredProposalApprovers(authorization), financialApprovers ?? 0);
+        let selectedApprovals = eligible;
+        if (input.approvalId) {
         const selected = eligible.find((approval) => approval.id === input.approvalId);
         if (!selected) {
           const hinted = this.stmt.selectApproval.get(input.approvalId) as ApprovalRow | undefined;
@@ -6302,11 +6329,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
         }
         selectedApprovals = [selected, ...eligible.filter((approval) => approval.id !== selected.id)];
       }
-      selectedApprovals = selectedApprovals.slice(0, requiredApprovers);
-      if (selectedApprovals.length < requiredApprovers)
+        selectedApprovals = selectedApprovals.slice(0, requiredApprovers);
+        if (selectedApprovals.length < requiredApprovers)
         throw new ProposalAcquisitionError('approval_required', 'Additional human approval is required');
 
-      const executionAuthorization = this.authorizeGenericProposal({
+        const executionAuthorization = this.authorizeGenericProposal({
         actorId: input.actorId,
         auth: input.auth,
         spaceId,
@@ -6323,13 +6350,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
         now,
         verifiedHumanApproval: true,
       });
-      if (!executionAuthorization.allowed)
+        if (!executionAuthorization.allowed)
         throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
 
-      const leaseExpiresAt = operation === 'consequential_action'
+        const leaseExpiresAt = operation === 'consequential_action'
         ? proposal.expires_at
         : new Date(nowMillis + 60_000).toISOString();
-      const claim = this.stmt.insertIdempotency.get({
+        const claim = this.stmt.insertIdempotency.get({
         idempotencyKey: input.idempotencyKey,
         proposalId: input.proposalId,
         operation,
@@ -6338,19 +6365,19 @@ export class SqliteWorkflowStore implements WorkflowStore {
         leaseExpiresAt,
         updatedAt: now,
       }) as IdempotencyRow | undefined;
-      if (!claim)
+        if (!claim)
         throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Idempotency key is already in use');
-      const acquired = this.stmt.insertProposalExecutionAcquisition.get({
+        const acquired = this.stmt.insertProposalExecutionAcquisition.get({
         proposalId: input.proposalId,
         idempotencyKey: input.idempotencyKey,
         actorId: input.actorId,
         acquiredAt: now,
       }) as { proposal_id: string } | undefined;
-      if (!acquired)
+        if (!acquired)
         throw new ProposalAcquisitionError('idempotency_in_progress', 'Proposal execution was already acquired');
 
-      const consumedApprovals: ProposalApproval[] = [];
-      for (const approval of selectedApprovals) {
+        const consumedApprovals: ProposalApproval[] = [];
+        for (const approval of selectedApprovals) {
         const result = this.stmt.consumeApprovalStmt.run({ id: approval.id, now });
         if (result.changes !== 1)
           throw new ProposalAcquisitionError('approval_consumed', 'Approval changed during execution acquisition');
@@ -6359,12 +6386,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
         );
       }
 
-      const auditId = randomUUID();
-      const auditResult = JSON.stringify({
+        const auditId = randomUUID();
+        const auditResult = JSON.stringify({
         proposalId: input.proposalId,
         approvalIds: consumedApprovals.map((approval) => approval.id),
       });
-      this.stmt.insertAudit.run({
+        this.stmt.insertAudit.run({
         id: auditId,
         classification: 'execution_started',
         timestamp: now,
@@ -6385,7 +6412,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         result: auditResult,
         isError: 0,
       });
-      if (operation === 'consequential_action') {
+        if (operation === 'consequential_action') {
         const current = this.stmt.selectProposal.get(proposal.id) as ProposalRow;
         const state = this.consequentialActionState(current);
         if (!['proposed', 'approved'].includes(state.phase) || state.acquisition)
@@ -6402,7 +6429,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
           },
         });
       }
-      const auditRecord: AuditRecord = {
+        const auditRecord: AuditRecord = {
         id: auditId,
         classification: 'execution_started',
         timestamp: now,
@@ -6423,12 +6450,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
         result: auditResult,
         isError: false,
       };
-      return {
+        return {
         claim: { record: rowToIdempotency(claim), isOwner: true },
         approvals: consumedApprovals,
         auditRecord,
       };
-    }).immediate();
+      })
+      .immediate();
   }
   /** Persists one observed atom dispatch before a later atom can be recorded. */
   async recordConsequentialActionEffect(
@@ -6480,19 +6508,20 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async finalizeConsequentialActionExecution(
     input: FinalizeConsequentialActionExecutionInput,
   ): Promise<ConsequentialActionState> {
-    return this.db.transaction(() => {
-      const phases: readonly ConsequentialActionState['phase'][] =
+    return this.db
+      .transaction(() => {
+        const phases: readonly ConsequentialActionState['phase'][] =
         input.outcome.kind === 'invalidated_no_dispatch'
           ? ['write_intent']
           : ['write_intent', 'review_required'];
-      let frame = this.requireConsequentialActionExecution(input, phases);
-      const now = nowISO();
-      let nextState: ConsequentialActionState;
-      let result: Record<string, unknown>;
-      let idempotencyStatus: 'succeeded' | 'terminal_failed' | null = null;
-      let errorMessage: string | null = null;
-      let classification: 'execution_completed' | 'execution_failed';
-      if (input.outcome.kind === 'review_required') {
+        let frame = this.requireConsequentialActionExecution(input, phases);
+        const now = nowISO();
+        let nextState: ConsequentialActionState;
+        let result: Record<string, unknown>;
+        let idempotencyStatus: 'succeeded' | 'terminal_failed' | null = null;
+        let errorMessage: string | null = null;
+        let classification: 'execution_completed' | 'execution_failed';
+        if (input.outcome.kind === 'review_required') {
         if (!input.outcome.reason.trim())
           throw new ProposalAcquisitionError('authorization_denied', 'Review outcome requires a reason');
         const observedState = input.outcome.observedState === undefined
@@ -6528,16 +6557,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
         errorMessage = 'Consequential action invalidated before dispatch';
         classification = 'execution_failed';
       } else {
-        const proof = consequentialActionVerificationProof(input.outcome.verificationToken);
-        const verifyRequest = proof?.verifyRequest;
-        const currentPolicy = frame.proposal.space_id
+          const proof = consequentialActionVerificationProof(input.outcome.verificationToken);
+          const verifyRequest = proof?.verifyRequest;
+          const currentPolicy = frame.proposal.space_id
           ? this.governance.getPolicy({ spaceId: frame.proposal.space_id })
           : null;
-        const atoms = frame.plan.action.kind === 'composite'
+          const atoms = frame.plan.action.kind === 'composite'
           ? frame.plan.action.actions
           : [frame.plan.action];
-        const expectedEffects = atoms.length;
-        if (!proof || !this.sameConsequentialActionIdentity(proof, input) ||
+          const expectedEffects = atoms.length;
+          if (!proof || !this.sameConsequentialActionIdentity(proof, input) ||
             !verifyRequest || verifyRequest.phase !== 'postconditions' ||
             canonicalProposalJson(verifyRequest.plan) !== canonicalProposalJson(frame.plan) ||
             frame.state.effects.length > expectedEffects ||
@@ -6553,23 +6582,27 @@ export class SqliteWorkflowStore implements WorkflowStore {
             proof.verification.reason !== null ||
             proof.verification.actionHash !== frame.plan.actionHash)
           throw new ProposalAcquisitionError('authorization_denied', 'Native postcondition verification proof is invalid');
-        if (frame.state.effects.length < expectedEffects) {
-          const ledger: ConsequentialActionLedger = verifyRequest.currentLedger;
-          const safeNumber = (minorUnits: bigint): number => {
+          if (frame.state.effects.length < expectedEffects) {
+            const ledger: ConsequentialActionLedger = verifyRequest.currentLedger;
+            const safeNumber = (minorUnits: bigint): number => {
             const value = Number(minorUnits);
             if (!Number.isSafeInteger(value))
               throw new ProposalAcquisitionError('authorization_denied', 'Recovered adapter amount is not safely representable');
             return value;
           };
-          const invalidRecovery = (): never => {
+            const invalidRecovery = (): never => {
             throw new ProposalAcquisitionError('authorization_denied', 'Native readback cannot recover the missing atom result');
           };
-          const recoveredEffects = [...frame.state.effects];
-          for (let effectIndex = frame.state.effects.length; effectIndex < expectedEffects; effectIndex++) {
-            const atom = atoms[effectIndex]!;
-            let atomResult: unknown;
-            switch (atom.kind) {
-              case 'reallocation': {
+            const recoveredEffects = [...frame.state.effects];
+            for (
+              let effectIndex = frame.state.effects.length;
+              effectIndex < expectedEffects;
+              effectIndex++
+            ) {
+              const atom = atoms[effectIndex]!;
+              let atomResult: unknown;
+              switch (atom.kind) {
+                case 'reallocation': {
                 const dispatch = frame.plan.dispatchPreconditions.find((entry) =>
                   entry.atomIndex === effectIndex);
                 if (!dispatch || dispatch.accountBalances.length !== 0) return invalidRecovery();
@@ -6623,8 +6656,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
                 };
                 break;
               }
-              case 'manual_transaction':
-              case 'evidence_projection': {
+                case 'manual_transaction':
+                case 'evidence_credit':
+                case 'evidence_amendment':
+                case 'evidence_projection': {
                 const transaction = atom.transaction;
                 const observed = ledger.transactions.filter((entry) => entry.parentId === transaction.parentId);
                 if (observed.length !== 1) return invalidRecovery();
@@ -6660,7 +6695,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
                 };
                 break;
               }
-              case 'wallet_materialization': {
+                case 'wallet_materialization': {
                 const mappings = ledger.wallets.filter((mapping) => mapping.walletId === atom.walletId);
                 if (mappings.length !== 1) return invalidRecovery();
                 const mapping = mappings[0]!;
@@ -6685,7 +6720,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
                 };
                 break;
               }
-              case 'transfer': {
+                case 'transfer': {
                 const mappings = ledger.transfers.filter((mapping) => mapping.transferId === atom.transferId);
                 const mapping = mappings[0];
                 const marker = `balanceframe:transfer:${atom.transferId}:${atom.correlationId}`;
@@ -7869,6 +7904,37 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const run = (sql: string): number => db.prepare(sql).run(params).changes;
     const transaction = db.transaction(() => {
       if (['connection', 'space', 'workflow', 'provider', 'user'].includes(dataScope)) {
+        deleted.evidenceItemRuleApprovals = run(
+          `DELETE FROM transaction_evidence_item_rule_approvals WHERE scope_key IN (SELECT scope_key FROM transaction_evidence_item_rules WHERE json_extract(scope_key,'$[0]')=@spaceId AND json_extract(scope_key,'$[1]')=@budgetId ${actorOnly ? 'AND actor_id=@actorId' : ''}) AND rule_id IN (SELECT id FROM transaction_evidence_item_rules WHERE json_extract(scope_key,'$[0]')=@spaceId AND json_extract(scope_key,'$[1]')=@budgetId ${actorOnly ? 'AND actor_id=@actorId' : ''})`,
+        );
+        deleted.evidenceItemRules = run(
+          `DELETE FROM transaction_evidence_item_rules WHERE json_extract(scope_key,'$[0]')=@spaceId AND json_extract(scope_key,'$[1]')=@budgetId ${actorOnly ? 'AND actor_id=@actorId' : ''}`,
+        );
+        const evidenceScope =
+          "json_extract(value,'$.scope.spaceId')=@spaceId AND json_extract(value,'$.scope.budgetId')=@budgetId";
+        const evidenceActor = actorOnly
+          ? " AND json_extract(value,'$.privateActorId')=@actorId"
+          : '';
+        const selectedEvidence = `SELECT id FROM transaction_evidence_documents WHERE ${evidenceScope}${evidenceActor}`;
+        const selectedScopes = `SELECT DISTINCT scope_key FROM transaction_evidence_documents WHERE ${evidenceScope}${evidenceActor}`;
+        deleted.evidenceDecisions = run(
+          `DELETE FROM transaction_evidence_decisions WHERE json_extract(scope_key,'$[0]')=@spaceId AND json_extract(scope_key,'$[1]')=@budgetId ${actorOnly ? 'AND actor_id=@actorId' : ''}`,
+        );
+        deleted.evidenceResolutions = run(
+          `DELETE FROM transaction_evidence_resolutions WHERE scope_key IN (${selectedScopes})`,
+        );
+        deleted.evidenceAudit = run(
+          `DELETE FROM transaction_evidence_audit WHERE document_id IN (${selectedEvidence})`,
+        );
+        if (!actorOnly)
+          deleted.evidenceLedgerProvenance = run(
+            "DELETE FROM transaction_evidence_ledger_provenance WHERE json_extract(scope_key,'$[0]')=@spaceId AND json_extract(scope_key,'$[1]')=@budgetId",
+          );
+        deleted.evidenceDocuments = run(
+          `DELETE FROM transaction_evidence_documents WHERE ${evidenceScope}${evidenceActor}`,
+        );
+      }
+      if (['connection', 'space', 'workflow', 'provider', 'user'].includes(dataScope)) {
         const scopes = db.prepare(`
           SELECT space_id, budget_id, connection_id, generation FROM merchant_scope_generations
            WHERE space_id=@spaceId AND budget_id=@budgetId
@@ -8027,6 +8093,31 @@ export class SqliteWorkflowStore implements WorkflowStore {
       reasons.push(
         `${governanceHistory.count} space identity, membership, grant, delegation, policy and audit record(s) retained`,
       );
+    const receiptInferencePolicyRecords = db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM transaction_evidence_decisions
+         WHERE actor_id='system:receipt-inference' AND source_hash='receipt-item-inference-policy:1'
+           AND json_extract(scope_key,'$[0]')=@spaceId
+           AND ((json_extract(scope_key,'$[1]')='receipt-inference:space' AND json_extract(scope_key,'$[2]')='receipt-inference:space')
+             OR (json_extract(scope_key,'$[1]')=@budgetId AND json_extract(scope_key,'$[2]')='receipt-inference:budget'))
+      `)
+      .get(params) as {count:number};
+    retainedCount += receiptInferencePolicyRecords.count;
+    if(receiptInferencePolicyRecords.count>0)
+      reasons.push(`${receiptInferencePolicyRecords.count} receipt inference policy record(s) retained with administrator attribution`);
+
+    const receiptInferenceQuotaRecords = db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM transaction_evidence_decisions
+         WHERE actor_id='system:receipt-inference' AND source_hash='receipt-item-inference-quota:1'
+           AND json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END,'$.spaceId')=@spaceId
+           AND json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END,'$.budgetId')=@budgetId
+      `)
+      .get(params) as {count:number};
+    retainedCount += receiptInferenceQuotaRecords.count;
+    if(receiptInferenceQuotaRecords.count>0)
+      reasons.push(`${receiptInferenceQuotaRecords.count} receipt inference quota reservation(s) retained to preserve shared daily limits`);
+
     const economicRecords = db
       .prepare(`
         SELECT

@@ -29,6 +29,13 @@ pub use balanceframe_financial_core::{
     CategorizationCandidate, Category, Rule, RuleCandidate, Transaction,
 };
 
+mod spend_session_receipt;
+pub use spend_session_receipt::compare_spend_session_receipt;
+mod evidence_settlement;
+pub use evidence_settlement::{derive_evidence_allocation_plan, derive_evidence_settlement_plan};
+mod wallet_statement;
+pub use wallet_statement::derive_wallet_statement_preview;
+
 // Declare fuzz tests.
 #[cfg(test)]
 mod fuzz;
@@ -665,3 +672,27 @@ pub fn evaluate_multidimensional_health(input: String) -> napi::Result<String> {
 
 #[cfg(test)]
 mod phase_85_tests;
+
+/// Resolve normalized transaction evidence without providers or ledger writes.
+#[napi]
+pub fn resolve_transaction_evidence(input: String) -> napi::Result<String> {
+    run(input, |request: cp::TransactionEvidenceRequest| {
+        cp::resolve_transaction_evidence(&request).map_err(|error| error.to_string())
+    })
+}
+
+/// Simulate a scoped evidence rule against normalized historical receipt evidence.
+#[napi]
+pub fn simulate_transaction_evidence_rule(input: String) -> napi::Result<String> {
+    run(input, |request: cp::EvidenceRuleSimulationRequest| {
+        cp::simulate_transaction_evidence_rule(&request).map_err(|error| error.to_string())
+    })
+}
+
+/// Derive approval-required exact item rules from authorized human-reviewed outcomes.
+#[napi]
+pub fn learn_transaction_evidence_item_rules(input: String) -> napi::Result<String> {
+    run(input, |request: cp::EvidenceItemRuleLearningRequest| {
+        cp::learn_transaction_evidence_item_rules(&request).map_err(|error| error.to_string())
+    })
+}

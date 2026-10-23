@@ -1,7 +1,12 @@
 import { createRequire } from 'node:module';
 import type { MerchantIntelligenceService, MerchantActor } from './merchant-service.js';
 import { merchantPendingReview } from './merchant-service.js';
-import { canonicalProtocolSnapshotSchema, validateNativeRuleTables, merchantSuggestionSchema, targetHealthResultSchema } from '@balanceframe/protocol-generated/validators';
+import {
+  canonicalProtocolSnapshotSchema,
+  validateNativeRuleTables,
+  merchantSuggestionSchema,
+  targetHealthResultSchema,
+} from '@balanceframe/protocol-generated/validators';
 /**
  * Production dependency composition for Observe mode.
  *
@@ -102,7 +107,11 @@ import {
   financialDecisionDedupKey,
 } from './notifications.js';
 import type { NotificationPolicy } from './notifications.js';
-import type { WorkflowStore, LifecycleScope, GovernanceOperation } from '@balanceframe/workflow-store';
+import type {
+  WorkflowStore,
+  LifecycleScope,
+  GovernanceOperation,
+} from '@balanceframe/workflow-store';
 import type {
   DecisionIssue,
   FinancialSnapshot,
@@ -320,6 +329,13 @@ export type NotificationStoreMethods = Pick<
  * analysis protocol adapter.
  */
 export interface NativeBindingShim {
+  resolveTransactionEvidence?(input: string): string;
+  simulateTransactionEvidenceRule?(input: string): string;
+  compareSpendSessionReceipt?(input: string): string;
+  learnTransactionEvidenceItemRules?(input: string): string;
+  deriveEvidenceSettlementPlan?(input: string): string;
+  deriveEvidenceAllocationPlan?(input: string): string;
+  deriveWalletStatementPreview?(input: string): string;
   analyzeDeterministic(input: string): string;
   /** Read-only merchant semantics over explicitly admitted immutable source. */
   analyzeMerchantIntelligence?(input: string): string;
@@ -672,7 +688,11 @@ function isDisconnectableLedger(value: unknown): value is { disconnect(): Promis
  */
 export async function createNativeAnalysisProtocol(
   nativeOverride?: () => Promise<NativeBindingShim>,
-  options?: { merchantService: MerchantIntelligenceService; merchantActor: MerchantActor; captureMerchantPublicationAuthority?: (authorize: () => boolean) => void },
+  options?: {
+    merchantService: MerchantIntelligenceService;
+    merchantActor: MerchantActor;
+    captureMerchantPublicationAuthority?: (authorize: () => boolean) => void;
+  },
 ): Promise<AnalysisProtocol> {
   const native = await loadNativeBindings(nativeOverride);
 
@@ -1492,7 +1512,6 @@ export async function createNativeAnalysisProtocol(
       };
     },
 
-
     // ------------------------------------------------------------------
     // financialState
     // ------------------------------------------------------------------
@@ -1527,21 +1546,37 @@ export async function createNativeAnalysisProtocol(
       // The caller must authorize the ledger's ordinary financial/target/transfer view.
       // Merchant evidence is independently admitted before any optional ledger synchronization.
       let authorizeMerchant: (() => boolean) | undefined;
-      const merchant = options ? await options.merchantService.withAnalysis(options.merchantActor, {}, (view, _source, authorize) => {
-        const operations: GovernanceOperation[] = view.recurrences.filter((recurrence) => recurrence.decisionState !== 'rejected').map((recurrence) => {
-          const signed = BigInt(recurrence.maximumAmount.minorUnits);
-          return { operation: 'merchant:analyze', accountId: recurrence.accountId,
-            amount: { ...recurrence.maximumAmount, minorUnits: (signed < 0n ? -signed : signed).toString() },
-            direction: signed < 0n ? 'outgoing' : 'incoming' };
-        });
-        if (!authorize(operations)) throw new Error('Merchant attention is not authorized');
-        authorizeMerchant = authorize;
-        options.captureMerchantPublicationAuthority?.(authorize);
-        return view;
-      }) : null;
+      const merchant = options
+        ? await options.merchantService.withAnalysis(
+            options.merchantActor,
+            {},
+            (view, _source, authorize) => {
+              const operations: GovernanceOperation[] = view.recurrences
+                .filter((recurrence) => recurrence.decisionState !== 'rejected')
+                .map((recurrence) => {
+                  const signed = BigInt(recurrence.maximumAmount.minorUnits);
+                  return {
+                    operation: 'merchant:analyze',
+                    accountId: recurrence.accountId,
+                    amount: {
+                      ...recurrence.maximumAmount,
+                      minorUnits: (signed < 0n ? -signed : signed).toString(),
+                    },
+                    direction: signed < 0n ? 'outgoing' : 'incoming',
+                  };
+                });
+              if (!authorize(operations)) throw new Error('Merchant attention is not authorized');
+              authorizeMerchant = authorize;
+              options.captureMerchantPublicationAuthority?.(authorize);
+              return view;
+            },
+          )
+        : null;
       const synchronization = await obtainSynchronization(ledger);
       const directSnapshot = canonicalProtocolSnapshotSchema.safeParse(ledger);
-      const rawSnapshot = snapshotFromSynchronization(synchronization) ?? (directSnapshot.success ? directSnapshot.data : null);
+      const rawSnapshot =
+        snapshotFromSynchronization(synchronization) ??
+        (directSnapshot.success ? directSnapshot.data : null);
       const financialSnapshot = financialSnapshotFromSynchronization(synchronization);
       if (!rawSnapshot) {
         return {
@@ -1714,30 +1749,52 @@ export async function createNativeAnalysisProtocol(
         for (const recurrence of merchant.recurrences) {
           if (recurrence.decisionState === 'rejected') continue;
           recurrences.push({
-            payeeName: recurrence.normalizedMerchant, amount: recurrence.maximumAmount,
-            frequency: recurrence.frequency, occurrences: recurrence.occurrences,
+            payeeName: recurrence.normalizedMerchant,
+            amount: recurrence.maximumAmount,
+            frequency: recurrence.frequency,
+            occurrences: recurrence.occurrences,
             lastOccurrence: recurrence.lastDate,
-            isEstimated: recurrence.tier !== 'confirmed' && recurrence.tier !== 'deterministic_match',
+            isEstimated:
+              recurrence.tier !== 'confirmed' && recurrence.tier !== 'deterministic_match',
           });
         }
       } else {
-        const response = asRecord(JSON.parse(native.analyzeDeterministic(JSON.stringify({
-          snapshot: rawSnapshot, options: { includePending: true, includeCleared: true },
-        }))));
+        const response = asRecord(
+          JSON.parse(
+            native.analyzeDeterministic(
+              JSON.stringify({
+                snapshot: rawSnapshot,
+                options: { includePending: true, includeCleared: true },
+              }),
+            ),
+          ),
+        );
         const analysis = asRecord(response?.analysis);
         const charges = Array.isArray(analysis?.recurringCharges) ? analysis.recurringCharges : [];
         for (const value of charges) {
           const charge = asRecord(value);
           const amount = asMoney(charge?.typicalAmount);
           const tier = merchantSuggestionSchema.shape.tier.safeParse(charge?.tier);
-          if (!charge || !amount || typeof charge.originalName !== 'string' ||
-            typeof charge.frequencyLabel !== 'string' || typeof charge.occurrences !== 'number' ||
-            !Number.isSafeInteger(charge.occurrences) || charge.occurrences < 0 ||
-            typeof charge.lastDate !== 'string' || !tier.success)
+          if (
+            !charge ||
+            !amount ||
+            typeof charge.originalName !== 'string' ||
+            typeof charge.frequencyLabel !== 'string' ||
+            typeof charge.occurrences !== 'number' ||
+            !Number.isSafeInteger(charge.occurrences) ||
+            charge.occurrences < 0 ||
+            typeof charge.lastDate !== 'string' ||
+            !tier.success
+          )
             throw new Error('Native recurrence projection is incomplete');
-          recurrences.push({ payeeName: charge.originalName, amount, frequency: charge.frequencyLabel,
-            occurrences: charge.occurrences, lastOccurrence: charge.lastDate,
-            isEstimated: tier.data !== 'confirmed' && tier.data !== 'deterministic_match' });
+          recurrences.push({
+            payeeName: charge.originalName,
+            amount,
+            frequency: charge.frequencyLabel,
+            occurrences: charge.occurrences,
+            lastOccurrence: charge.lastDate,
+            isEstimated: tier.data !== 'confirmed' && tier.data !== 'deterministic_match',
+          });
         }
       }
 
@@ -1780,7 +1837,8 @@ export async function createNativeAnalysisProtocol(
         (sf) => (sf.targetProgress ?? 0) >= 0.8,
       ).length;
 
-      if (authorizeMerchant && !authorizeMerchant()) throw new Error('Merchant attention is not authorized');
+      if (authorizeMerchant && !authorizeMerchant())
+        throw new Error('Merchant attention is not authorized');
       return {
         blockers,
         alerts,
@@ -1958,39 +2016,66 @@ function mapDeterministicResponse(raw: string, snapshot: unknown): PendingReview
     return [item.ruleSetIndex];
   });
   const { nativeRuleBlocks, nativeRuleParts, nativeRuleSets } = validateNativeRuleTables(
-    analysis.nativeRuleBlocks, analysis.nativeRuleParts, analysis.nativeRuleSets, usedSetIndexes,
+    analysis.nativeRuleBlocks,
+    analysis.nativeRuleParts,
+    analysis.nativeRuleSets,
+    usedSetIndexes,
   );
   const source = asRecord(snapshot);
-  const sourceRules = new Set(Array.isArray(source?.rules) ? source.rules.flatMap((value: unknown) => {
-    const rule = asRecord(value); return typeof rule?.id === 'string' ? [rule.id] : [];
-  }) : []);
-  const sourceCategories = new Set(Array.isArray(source?.categories) ? source.categories.flatMap((value: unknown) => {
-    const category = asRecord(value); return typeof category?.id === 'string' && category.deleted !== true ? [category.id] : [];
-  }) : []);
-  for (const block of nativeRuleBlocks) for (const id of block.ruleIds) if (!sourceRules.has(id))
-    throw new Error('Native deterministic rule namespace is inconsistent with current source.');
+  const sourceRules = new Set(
+    Array.isArray(source?.rules)
+      ? source.rules.flatMap((value: unknown) => {
+          const rule = asRecord(value);
+          return typeof rule?.id === 'string' ? [rule.id] : [];
+        })
+      : [],
+  );
+  const sourceCategories = new Set(
+    Array.isArray(source?.categories)
+      ? source.categories.flatMap((value: unknown) => {
+          const category = asRecord(value);
+          return typeof category?.id === 'string' && category.deleted !== true ? [category.id] : [];
+        })
+      : [],
+  );
+  for (const block of nativeRuleBlocks)
+    for (const id of block.ruleIds)
+      if (!sourceRules.has(id))
+        throw new Error('Native deterministic rule namespace is inconsistent with current source.');
   const sourceTransactions = new Set<string>();
   const collectSource = (rows: unknown[]): void => {
     for (const value of rows) {
       const transaction = asRecord(value);
-      if (!transaction || typeof transaction.id !== 'string' || sourceTransactions.has(transaction.id))
+      if (
+        !transaction ||
+        typeof transaction.id !== 'string' ||
+        sourceTransactions.has(transaction.id)
+      )
         throw new Error('Native deterministic source transaction identity is inconsistent.');
       sourceTransactions.add(transaction.id);
       if (Array.isArray(transaction.subtransactions)) collectSource(transaction.subtransactions);
     }
   };
   if (nativeRuleSets.length) {
-    if (!Array.isArray(source?.transactions)) throw new Error('Native deterministic source transactions are unavailable.');
+    if (!Array.isArray(source?.transactions))
+      throw new Error('Native deterministic source transactions are unavailable.');
     collectSource(source.transactions);
   }
   const seen = new Set<string>();
   const backlog = asRecord(analysis?.uncategorizedBacklog);
   const candidates = classifications.flatMap((value) => {
     const item = asRecord(value);
-    if (!item || typeof item.transactionId !== 'string' || !item.transactionId || typeof item.date !== 'string' || seen.has(item.transactionId))
+    if (
+      !item ||
+      typeof item.transactionId !== 'string' ||
+      !item.transactionId ||
+      typeof item.date !== 'string' ||
+      seen.has(item.transactionId)
+    )
       throw new Error('Invalid or duplicate native deterministic transaction.');
     seen.add(item.transactionId);
-    if (item.ruleIds !== undefined) throw new Error('Inline native rule provenance is no longer supported.');
+    if (item.ruleIds !== undefined)
+      throw new Error('Inline native rule provenance is no longer supported.');
     const amount = asRecord(item.amount);
     const reasons = Array.isArray(item.reasons)
       ? item.reasons.flatMap((reason) => {
@@ -2000,18 +2085,30 @@ function mapDeterministicResponse(raw: string, snapshot: unknown): PendingReview
             : [];
         })
       : [];
-    const hasRuleTarget = item.proposedCategoryId !== undefined ||
-      item.proposedCategoryName !== undefined || item.ruleSetIndex !== undefined;
-    let ruleTarget: {
-      proposedCategoryId: string;
-      proposedCategoryName: string;
-      ruleSetIndex: number;
-    } | undefined;
+    const hasRuleTarget =
+      item.proposedCategoryId !== undefined ||
+      item.proposedCategoryName !== undefined ||
+      item.ruleSetIndex !== undefined;
+    let ruleTarget:
+      | {
+          proposedCategoryId: string;
+          proposedCategoryName: string;
+          ruleSetIndex: number;
+        }
+      | undefined;
     if (hasRuleTarget) {
-      if (typeof item.proposedCategoryId !== 'string' || !item.proposedCategoryId ||
-          typeof item.proposedCategoryName !== 'string' ||
-          !Number.isInteger(item.ruleSetIndex) || typeof item.ruleSetIndex !== 'number' || item.ruleSetIndex < 0 || item.ruleSetIndex > 0xffff_ffff ||
-          !nativeRuleSets[item.ruleSetIndex] || !sourceCategories.has(item.proposedCategoryId) || !sourceTransactions.has(item.transactionId))
+      if (
+        typeof item.proposedCategoryId !== 'string' ||
+        !item.proposedCategoryId ||
+        typeof item.proposedCategoryName !== 'string' ||
+        !Number.isInteger(item.ruleSetIndex) ||
+        typeof item.ruleSetIndex !== 'number' ||
+        item.ruleSetIndex < 0 ||
+        item.ruleSetIndex > 0xffff_ffff ||
+        !nativeRuleSets[item.ruleSetIndex] ||
+        !sourceCategories.has(item.proposedCategoryId) ||
+        !sourceTransactions.has(item.transactionId)
+      )
         throw new Error('Native rule classification has incomplete target evidence.');
       ruleTarget = {
         proposedCategoryId: item.proposedCategoryId,
@@ -2022,7 +2119,7 @@ function mapDeterministicResponse(raw: string, snapshot: unknown): PendingReview
     return [
       {
         transactionId: item.transactionId,
-        source: ruleTarget ? 'native-rule' as const : 'uncategorized' as const,
+        source: ruleTarget ? ('native-rule' as const) : ('uncategorized' as const),
         amount: {
           minorUnits: typeof amount?.minorUnits === 'string' ? amount.minorUnits : '0',
           currency: typeof amount?.currency === 'string' ? amount.currency : 'USD',
@@ -2070,14 +2167,16 @@ function mapDeterministicResponse(raw: string, snapshot: unknown): PendingReview
  */
 export interface LifecycleStore {
   cancelPendingJobs(scope: LifecycleScope, options?: { actorOnly?: boolean }): Promise<number>;
-  recordExport(input: LifecycleScope & {
-    budgetName: string;
-    exportPath: string;
-    sha256Hash: string;
-    byteSize: number;
-    accountCount: number;
-    transactionCount: number;
-  }): Promise<void>;
+  recordExport(
+    input: LifecycleScope & {
+      budgetName: string;
+      exportPath: string;
+      sha256Hash: string;
+      byteSize: number;
+      accountCount: number;
+      transactionCount: number;
+    },
+  ): Promise<void>;
   getLastExport(scope: LifecycleScope): Promise<{
     exportedAt: string;
     budgetName: string;
@@ -2279,9 +2378,7 @@ export function createLifecycleCallbacks(
       }
 
       const cancelledJobs =
-        store && scope
-          ? await store.cancelPendingJobs(scope, { actorOnly: true })
-          : 0;
+        store && scope ? await store.cancelPendingJobs(scope, { actorOnly: true }) : 0;
       return {
         disconnected: cacheRemoved,
         cacheRemoved,
@@ -2489,7 +2586,6 @@ export function createLifecycleCallbacks(
         failures: [],
       };
     },
-
   };
 }
 

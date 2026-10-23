@@ -1,0 +1,162 @@
+{
+  "contractVersion": "1",
+  "policyVersion": "evidence-policy-1",
+  "resolutionHash": "5ec973c274248e1bb2804e3ab58d509de962ffb166d2b570549c2af880f908dd",
+  "events": [
+    {
+      "id": "event:28d16792e572edb3b8495f283465eef058ae8f7976850318b9f6f960b3746ad6",
+      "version": "1",
+      "eventType": "p2p_payment",
+      "state": "blocked",
+      "amount": {
+        "minorUnits": "100",
+        "currency": "USD"
+      },
+      "observationIds": ["wallet-1"],
+      "evidenceIds": ["doc-wallet"],
+      "reasonCodes": [],
+      "projectionObservation": null
+    }
+  ],
+  "relationships": [],
+  "wallets": [
+    {
+      "coverage": {
+        "intervals": [
+          {
+            "startDate": "2026-10-15",
+            "endDate": "2026-10-16",
+            "proofIds": ["proof"],
+            "evidenceIds": ["doc-wallet"],
+            "openingBalance": {
+              "minorUnits": "200",
+              "currency": "USD"
+            },
+            "closingBalance": {
+              "minorUnits": "100",
+              "currency": "USD"
+            },
+            "state": "covered",
+            "reasonCodes": []
+          }
+        ],
+        "uncoveredObservationIds": [],
+        "blockedObservationIds": []
+      },
+      "balanceAnchors": [
+        {
+          "walletId": "wallet",
+          "amount": {
+            "minorUnits": "200",
+            "currency": "USD"
+          },
+          "asOfDate": "2026-10-15",
+          "boundary": "before_day_activity",
+          "proofIds": ["proof"],
+          "proofSetHash": "34ac076cc2fc7f0c30a74278db411c625289321f454e62a989609418f2e5fe07",
+          "activityManifestHash": "5c74da518fd758f203b6a0b2abbc9f6490693f43c53a47f05a20c8d8d2d1f22e",
+          "evidenceIds": ["doc-wallet"]
+        },
+        {
+          "walletId": "wallet",
+          "amount": {
+            "minorUnits": "100",
+            "currency": "USD"
+          },
+          "asOfDate": "2026-10-16",
+          "boundary": "after_day_activity",
+          "proofIds": ["proof"],
+          "proofSetHash": "34ac076cc2fc7f0c30a74278db411c625289321f454e62a989609418f2e5fe07",
+          "activityManifestHash": "5c74da518fd758f203b6a0b2abbc9f6490693f43c53a47f05a20c8d8d2d1f22e",
+          "evidenceIds": ["doc-wallet"]
+        }
+      ],
+      "anchorObservations": [
+        {
+          "walletBalanceAnchor": {
+            "walletId": "wallet",
+            "amount": {
+              "minorUnits": "200",
+              "currency": "USD"
+            },
+            "asOfDate": "2026-10-15",
+            "boundary": "before_day_activity",
+            "proofIds": ["proof"],
+            "proofSetHash": "34ac076cc2fc7f0c30a74278db411c625289321f454e62a989609418f2e5fe07",
+            "activityManifestHash": "5c74da518fd758f203b6a0b2abbc9f6490693f43c53a47f05a20c8d8d2d1f22e",
+            "evidenceIds": ["doc-wallet"]
+          },
+          "kind": "wallet_statement_anchor",
+          "scope": {
+            "kind": "claim",
+            "id": "wallet"
+          },
+          "state": "resolved",
+          "observedAt": "2026-10-17T00:00:00Z",
+          "contentHash": "34ac076cc2fc7f0c30a74278db411c625289321f454e62a989609418f2e5fe07",
+          "version": "wallet-statement-v1",
+          "evidence": [
+            {
+              "evidenceId": "doc-wallet",
+              "kind": "human_attested_statement",
+              "authorized": true,
+              "redaction": "visible"
+            }
+          ]
+        },
+        {
+          "walletBalanceAnchor": {
+            "walletId": "wallet",
+            "amount": {
+              "minorUnits": "100",
+              "currency": "USD"
+            },
+            "asOfDate": "2026-10-16",
+            "boundary": "after_day_activity",
+            "proofIds": ["proof"],
+            "proofSetHash": "34ac076cc2fc7f0c30a74278db411c625289321f454e62a989609418f2e5fe07",
+            "activityManifestHash": "5c74da518fd758f203b6a0b2abbc9f6490693f43c53a47f05a20c8d8d2d1f22e",
+            "evidenceIds": ["doc-wallet"]
+          },
+          "kind": "wallet_statement_anchor",
+          "scope": {
+            "kind": "claim",
+            "id": "wallet"
+          },
+          "state": "resolved",
+          "observedAt": "2026-10-17T00:00:00Z",
+          "contentHash": "34ac076cc2fc7f0c30a74278db411c625289321f454e62a989609418f2e5fe07",
+          "version": "wallet-statement-v1",
+          "evidence": [
+            {
+              "evidenceId": "doc-wallet",
+              "kind": "human_attested_statement",
+              "authorized": true,
+              "redaction": "visible"
+            }
+          ]
+        }
+      ],
+      "walletId": "wallet",
+      "openingBalance": {
+        "minorUnits": "200",
+        "currency": "USD"
+      },
+      "closingBalance": {
+        "minorUnits": "100",
+        "currency": "USD"
+      },
+      "balanceState": "known",
+      "projection": "materialize",
+      "reasonCodes": ["human_attested_statement"]
+    }
+  ],
+  "receipts": [],
+  "blockers": [
+    {
+      "code": "unmatched_funds",
+      "subjectId": "event:28d16792e572edb3b8495f283465eef058ae8f7976850318b9f6f960b3746ad6",
+      "evidenceIds": ["doc-wallet"]
+    }
+  ]
+}

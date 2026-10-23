@@ -67,6 +67,13 @@
       >Review transfer status and next steps</NuxtLink
     >
 
+    <NuxtLink
+      v-if="finding.classification === 'evidence_connector_degradation' || finding.classification === 'unresolved_material_evidence'"
+      to="/review#transaction-evidence"
+      class="mt-3 inline-block text-sm font-medium underline"
+      >Review transaction evidence</NuxtLink
+    >
+
     <div v-if="finding.issue" class="mt-3 border-t border-gray-200 pt-2 dark:border-gray-700">
       <EvidenceDrawer
         :references="finding.issue.evidence"

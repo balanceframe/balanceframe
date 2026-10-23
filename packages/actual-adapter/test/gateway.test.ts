@@ -460,9 +460,9 @@ describe('ActualConnector', () => {
         serverUrl: 'http://localhost:5006',
         secretKey: 'secret',
       });
-      await expect(connector.setTransactionCategory('tx1', 'c1', null, categoryExecutionPrecondition)).rejects.toThrow(
-        /not permitted|observe/i,
-      );
+      await expect(
+        connector.setTransactionCategory('tx1', 'c1', null, categoryExecutionPrecondition),
+      ).rejects.toThrow(/not permitted|observe/i);
     });
 
     it('should report canWrite=false in capabilities', async () => {
@@ -535,7 +535,9 @@ describe('ActualConnector', () => {
       mockClient.updateTransaction = vi.fn();
       mockClient.getAccounts = vi.fn().mockReturnValue(mockAccounts);
       mockClient.getTransactions = vi.fn().mockReturnValue(mockTransactions);
-      await expect(connector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition)).rejects.toThrow();
+      await expect(
+        connector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition),
+      ).rejects.toThrow();
       expect(mockClient.updateTransaction).not.toHaveBeenCalled();
     });
   });
@@ -1265,6 +1267,81 @@ describe('ActualConnector', () => {
 
       expect(mockClient.shutdown).toHaveBeenCalled();
       expect(store.has()).toBe(false);
+    });
+
+    it('keeps SQLite cache files in place until the SDK shutdown completes', async () => {
+      const { mkdtempSync, existsSync, rmSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const { tmpdir } = await import('node:os');
+      const cacheDir = mkdtempSync(join(tmpdir(), 'bf-shutdown-order-'));
+      const localMock = createMockClient({ getBudgets: vi.fn().mockResolvedValue(mockFiles) });
+      const localConnector = new ActualConnector({
+        client: localMock,
+        credentialStore: new NullCredentialStore(),
+        cacheDir,
+      });
+      try {
+        await localConnector.connect({ serverUrl: 'http://shutdown:5006', secretKey: 'test' });
+        await localConnector.selectBudget('budget_1');
+        const caches = (
+          localConnector as unknown as {
+            caches: Map<string, { cacheDir: string }>;
+          }
+        ).caches;
+        const activeDirectory = caches.get('budget_1')!.cacheDir;
+        expect(existsSync(activeDirectory)).toBe(true);
+        localMock.shutdown = vi.fn(async () => {
+          expect(existsSync(activeDirectory)).toBe(true);
+          expect(caches.has('budget_1')).toBe(true);
+          await Promise.resolve();
+          expect(existsSync(activeDirectory)).toBe(true);
+        });
+        await localConnector.disconnect();
+        expect(existsSync(activeDirectory)).toBe(false);
+        expect(caches.size).toBe(0);
+      } finally {
+        rmSync(cacheDir, { recursive: true, force: true });
+      }
+    });
+
+    it('retains cache and credentials after failed shutdown so quarantined cleanup can retry', async () => {
+      const { mkdtempSync, existsSync, rmSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const { tmpdir } = await import('node:os');
+      const cacheDir = mkdtempSync(join(tmpdir(), 'bf-shutdown-retry-'));
+      const store = new NullCredentialStore();
+      const localMock = createMockClient({ getBudgets: vi.fn().mockResolvedValue(mockFiles) });
+      const localConnector = new ActualConnector({
+        client: localMock,
+        credentialStore: store,
+        cacheDir,
+      });
+      try {
+        await localConnector.connect({ serverUrl: 'http://shutdown:5006', secretKey: 'test' });
+        await localConnector.selectBudget('budget_1');
+        const state = localConnector as unknown as {
+          caches: Map<string, { cacheDir: string }>;
+          _initialized: boolean;
+        };
+        const activeDirectory = state.caches.get('budget_1')!.cacheDir;
+        localMock.shutdown = vi
+          .fn()
+          .mockRejectedValueOnce(new Error('SDK shutdown incomplete'))
+          .mockResolvedValueOnce(undefined);
+        await expect(localConnector.disconnect()).rejects.toThrow('SDK shutdown incomplete');
+        expect(existsSync(activeDirectory)).toBe(true);
+        expect(state.caches.has('budget_1')).toBe(true);
+        expect(state._initialized).toBe(true);
+        expect(store.has()).toBe(true);
+        await localConnector.disconnect();
+        expect(existsSync(activeDirectory)).toBe(false);
+        expect(state.caches.size).toBe(0);
+        expect(state._initialized).toBe(false);
+        expect(store.has()).toBe(false);
+        expect(localMock.shutdown).toHaveBeenCalledTimes(2);
+      } finally {
+        rmSync(cacheDir, { recursive: true, force: true });
+      }
     });
 
     it('should be callable even without prior connect', async () => {
@@ -3267,7 +3344,12 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
 
       // currentCategoryId=null skips precondition check; proposed c1 exists in mockCategories
-      const result = await writeConnector.setTransactionCategory('tx1', 'c1', null, categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c1',
+        null,
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.transactionId).toBe('tx1');
@@ -3304,7 +3386,12 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
 
       // 'nonexistent' is not in mockCategories
-      const result = await writeConnector.setTransactionCategory('tx1', 'nonexistent', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'nonexistent',
+        'c1',
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('CATEGORY_NOT_FOUND');
@@ -3352,7 +3439,12 @@ describe('ActualConnector', () => {
 
       mock.updateTransaction = vi.fn();
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c_deleted', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c_deleted',
+        'c1',
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('CATEGORY_DELETED');
@@ -3391,11 +3483,13 @@ describe('ActualConnector', () => {
         return mockCategories;
       });
       try {
-        await expect(writeConnector.setTransactionCategory('tx1', 'c2', 'c1', {
-          assertExecutionCurrent: () => {
-            if (!authorityCurrent) throw new Error('acquired authority expired');
-          },
-        })).rejects.toThrow('acquired authority expired');
+        await expect(
+          writeConnector.setTransactionCategory('tx1', 'c2', 'c1', {
+            assertExecutionCurrent: () => {
+              if (!authorityCurrent) throw new Error('acquired authority expired');
+            },
+          }),
+        ).rejects.toThrow('acquired authority expired');
         expect(mock.updateTransaction).not.toHaveBeenCalled();
       } finally {
         await writeConnector.disconnect();
@@ -3436,7 +3530,12 @@ describe('ActualConnector', () => {
           return Promise.resolve(undefined);
         });
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c2',
+        'c1',
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.transactionId).toBe('tx1');
@@ -3478,7 +3577,12 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
 
       // tx1 has category 'c1', but we say it's 'c2' — precondition mismatch
-      const result = await writeConnector.setTransactionCategory('tx1', 'c3', 'c2', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c3',
+        'c2',
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('PRECONDITION_MISMATCH');
@@ -3528,7 +3632,12 @@ describe('ActualConnector', () => {
 
       // tx1 has category 'c1' in Actual, but stored review item has null (unknown).
       // Should read Actual's current category and proceed without mismatch.
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', null, categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c2',
+        null,
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.transactionId).toBe('tx1');
@@ -3581,7 +3690,12 @@ describe('ActualConnector', () => {
         });
 
       // tx1 has category null in Actual, and stored review item also has null.
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', null, categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c2',
+        null,
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.transactionId).toBe('tx1');
@@ -3619,7 +3733,12 @@ describe('ActualConnector', () => {
 
       mock.updateTransaction = vi.fn();
 
-      const result = await writeConnector.setTransactionCategory('nonexistent', 'c1', null, categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'nonexistent',
+        'c1',
+        null,
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('TRANSACTION_NOT_FOUND');
@@ -3642,7 +3761,9 @@ describe('ActualConnector', () => {
       mockClient.getTransactions = vi.fn().mockResolvedValue(mockTransactions);
       mockClient.updateTransaction = vi.fn();
 
-      await expect(connector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition)).rejects.toThrow();
+      await expect(
+        connector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition),
+      ).rejects.toThrow();
 
       expect(mockClient.updateTransaction).not.toHaveBeenCalled();
       expect(mockClient.getAccounts).not.toHaveBeenCalled();
@@ -3683,7 +3804,12 @@ describe('ActualConnector', () => {
       // Reset counter after selectBudget (which does not call getTransactions)
       calls = 0;
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c2',
+        'c1',
+        categoryExecutionPrecondition,
+      );
 
       expect(result.success).toBe(true);
       if (result.success) {
@@ -3725,7 +3851,12 @@ describe('ActualConnector', () => {
       });
       await writeConnector.selectBudget('budget_1');
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c2',
+        'c1',
+        categoryExecutionPrecondition,
+      );
 
       // updateTransaction was called (the write happened)
       expect(mock.updateTransaction).toHaveBeenCalledTimes(1);
@@ -3766,7 +3897,12 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
       mock.getCategories = vi.fn();
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c2',
+        'c1',
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('BUDGET_NOT_SELECTED');
@@ -3803,7 +3939,12 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
 
       // 'nonexistent' is not in mockCategories
-      const result = await writeConnector.setTransactionCategory('tx1', 'nonexistent', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'nonexistent',
+        'c1',
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('CATEGORY_NOT_FOUND');
@@ -3850,7 +3991,12 @@ describe('ActualConnector', () => {
 
       mock.updateTransaction = vi.fn();
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c_deleted', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c_deleted',
+        'c1',
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('CATEGORY_DELETED');
@@ -3895,7 +4041,12 @@ describe('ActualConnector', () => {
 
       calls = 0;
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
+      const result = await writeConnector.setTransactionCategory(
+        'tx1',
+        'c2',
+        'c1',
+        categoryExecutionPrecondition,
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('VERIFICATION_FAILED');
@@ -3953,14 +4104,18 @@ describe('ActualConnector', () => {
 
       // Two concurrent calls on DIFFERENT transactions so precondition doesn't
       // become stale. tx1 starts c1 → c2; tx2 starts c2 → c1.
-      const p1 = writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition).then((r) => {
-        order.push(1);
-        return r;
-      });
-      const p2 = writeConnector.setTransactionCategory('tx2', 'c1', 'c2', categoryExecutionPrecondition).then((r) => {
-        order.push(2);
-        return r;
-      });
+      const p1 = writeConnector
+        .setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition)
+        .then((r) => {
+          order.push(1);
+          return r;
+        });
+      const p2 = writeConnector
+        .setTransactionCategory('tx2', 'c1', 'c2', categoryExecutionPrecondition)
+        .then((r) => {
+          order.push(2);
+          return r;
+        });
 
       const [r1, r2] = await Promise.all([p1, p2]);
 

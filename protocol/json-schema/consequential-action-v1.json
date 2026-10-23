@@ -55,6 +55,8 @@
         "amount": { "$ref": "#/$defs/PositiveMoney" }
       }
     },
+    "WalletOpeningIntent": {"type": "object", "additionalProperties": false, "required": ["amount", "date", "proofSetHash", "activityManifestHash"], "properties": {"amount": {"$ref": "#/$defs/PositiveMoney"}, "date": {"$ref": "#/$defs/Date"}, "proofSetHash": {"$ref": "#/$defs/Hash"}, "activityManifestHash": {"$ref": "#/$defs/Hash"}}},
+    "WalletOpeningEquity": {"type": "object", "additionalProperties": false, "required": ["walletId", "accountId", "transactionId", "date", "amount", "startingBalance", "sdkFingerprint", "payeeId", "categoryId"], "properties": {"walletId": {"$ref": "#/$defs/String"}, "accountId": {"$ref": "#/$defs/String"}, "transactionId": {"$ref": "#/$defs/String"}, "date": {"$ref": "#/$defs/Date"}, "amount": {"$ref": "#/$defs/PositiveMoney"}, "startingBalance": {"type": "boolean"}, "sdkFingerprint": {"$ref": "#/$defs/Hash"}, "payeeId": {"type": ["string", "null"], "minLength": 1}, "categoryId": {"type": ["string", "null"], "minLength": 1}}},
     "AtomicConsequentialActionIntent": {
       "oneOf": [
         {
@@ -70,12 +72,83 @@
         {
           "type": "object", "additionalProperties": false,
           "required": ["kind", "transaction", "evidenceIds"],
-          "properties": { "kind": { "const": "evidence_projection" }, "transaction": { "$ref": "#/$defs/ManualTransactionIntent" }, "evidenceIds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/String" }, "uniqueItems": true } }
+          "properties": { "resolutionSubjectId": { "$ref": "#/$defs/String" }, "kind": { "const": "evidence_projection" }, "transaction": { "$ref": "#/$defs/ManualTransactionIntent" }, "evidenceIds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/String" }, "uniqueItems": true } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "transaction",
+            "evidenceIds"
+          ],
+          "properties": {
+            "resolutionSubjectId": { "$ref": "#/$defs/String" },
+            "kind": {
+              "const": "evidence_credit"
+            },
+            "transaction": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ManualTransactionIntent"
+                },
+                {
+                  "properties": {
+                    "amount": {
+                      "$ref": "#/$defs/PositiveMoney"
+                    }
+                  }
+                }
+              ]
+            },
+            "evidenceIds": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/String"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "expected",
+            "expectedSource",
+            "transaction",
+            "evidenceIds"
+          ],
+          "properties": {
+            "resolutionSubjectId": { "$ref": "#/$defs/String" },
+            "kind": {
+              "const": "evidence_amendment"
+            },
+            "expected": {
+              "$ref": "#/$defs/LedgerTransaction"
+            },
+            "expectedSource": {
+              "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/Transaction"
+            },
+            "transaction": {
+              "$ref": "#/$defs/ManualTransactionIntent"
+            },
+            "evidenceIds": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/String"
+              }
+            }
+          }
         },
         {
           "type": "object", "additionalProperties": false,
           "required": ["kind", "walletId", "accountName", "currency"],
-          "properties": { "kind": { "const": "wallet_materialization" }, "walletId": { "$ref": "#/$defs/String" }, "accountName": { "$ref": "#/$defs/String" }, "currency": { "type": "string", "pattern": "^[A-Z]{3}$" } }
+          "properties": { "opening": { "$ref": "#/$defs/WalletOpeningIntent" }, "kind": { "const": "wallet_materialization" }, "walletId": { "$ref": "#/$defs/String" }, "accountName": { "$ref": "#/$defs/String" }, "currency": { "type": "string", "pattern": "^[A-Z]{3}$" } }
         },
         {
           "type": "object",
@@ -135,7 +208,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["accounts", "categories", "assignments", "wallets", "transactions", "transfers"],
-      "properties": {
+      "properties": { "walletOpeningEquities": { "type": "array", "items": { "$ref": "#/$defs/WalletOpeningEquity" } },
         "accounts": { "type": "array", "items": { "$ref": "#/$defs/ConsequentialActionAccount" } },
         "categories": { "type": "array", "items": { "$ref": "#/$defs/ConsequentialActionCategory" } },
         "assignments": { "type": "array", "items": { "$ref": "#/$defs/ConsequentialActionAssignment" } },
@@ -205,6 +278,7 @@
     },
     "Postcondition": {
       "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "walletId", "amount", "date"], "properties": { "kind": { "const": "wallet_opening_equity" }, "walletId": { "$ref": "#/$defs/String" }, "amount": { "$ref": "#/$defs/PositiveMoney" }, "date": { "$ref": "#/$defs/Date" } } },
         { "type": "object", "additionalProperties": false, "required": ["kind", "categoryId", "asOfMonth", "amount"], "properties": { "kind": { "const": "assignment" }, "categoryId": { "$ref": "#/$defs/String" }, "asOfMonth": { "$ref": "#/$defs/Month" }, "amount": { "$ref": "#/$defs/Money" } } },
         { "type": "object", "additionalProperties": false, "required": ["kind", "accountId", "balance"], "properties": { "kind": { "const": "account_balance" }, "accountId": { "$ref": "#/$defs/String" }, "balance": { "$ref": "#/$defs/Money" } } },
         { "type": "object", "additionalProperties": false, "required": ["kind", "parentId", "accountId", "amount", "date", "categoryId", "payeeName", "notes", "splits"], "properties": { "kind": { "const": "transaction" }, "parentId": { "$ref": "#/$defs/String" }, "accountId": { "$ref": "#/$defs/String" }, "amount": { "$ref": "#/$defs/Money" }, "date": { "$ref": "#/$defs/Date" }, "categoryId": { "type": ["string", "null"], "minLength": 1 }, "payeeName": { "type": ["string", "null"] }, "notes": { "type": ["string", "null"] }, "splits": { "type": "array", "items": { "$ref": "#/$defs/ManualTransactionSplit" } } } },

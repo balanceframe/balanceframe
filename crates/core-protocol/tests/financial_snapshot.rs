@@ -111,6 +111,8 @@ fn observation(
     evidence: &[(&str, &str)],
 ) -> SourceObservation {
     SourceObservation {
+        wallet_balance_anchor: None,
+        allocation_review: None,
         kind,
         scope,
         state,

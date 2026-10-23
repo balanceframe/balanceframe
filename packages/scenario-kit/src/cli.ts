@@ -104,8 +104,8 @@ async function verify(selector: string): Promise<void> {
     verifyScenarioCoverage(records, expected);
   }
   if (selector === '--all' || selector === '--faults') {
-    console.log('Native/service fault contracts: four named cases (five tested variants)');
-    const { status } = await runVitest('test/fault/fault-contract.test.ts');
+    console.log('Native/service fault contracts, including separately labelled synthetic evidence faults');
+    const { status } = await runVitest('test/fault/');
     if (status !== 0) process.exitCode = status;
   }
 }

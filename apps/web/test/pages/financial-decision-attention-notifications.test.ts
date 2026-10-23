@@ -486,6 +486,7 @@ describe('existing / financial-decision attention surface', () => {
     expect(surface.findAllComponents(FindingCard)).toHaveLength(6);
     expect(surface.findAllComponents(ReasonCodeList).length).toBeGreaterThanOrEqual(6);
     expect(surface.findAllComponents(EvidenceDrawer)).toHaveLength(6);
+    expect(surface.findAll('a[href="/review#transaction-evidence"]')).toHaveLength(2);
 
     const blockerPosition = surface.text().indexOf('Card account evidence must be refreshed.');
     const alertPosition = surface.text().indexOf('A possible incomplete transfer needs review.');
@@ -620,7 +621,7 @@ describe('existing /notifications financial-decision delivery surface', () => {
     expect(hrefs).not.toContain('/inbox');
     expect(hrefs).not.toContain('/notifications/inbox');
     expect(
-      hrefs.some((href) => /connector|transfer|reservation|commitment|evidence/.test(href)),
+      hrefs.some((href) => /connector|transfer|reservation|commitment|evidence/.test(href.split('#')[0]!)),
     ).toBe(false);
   });
 });

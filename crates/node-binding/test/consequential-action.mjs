@@ -453,3 +453,44 @@ manualIdentity.intent.transaction.parentId = 'manual-parent-2';
 assert.notEqual(planAction(manualIdentity).actionHash, parentIdentityPlan.actionHash);
 
 console.log('native consequential action boundary contract passed');
+
+const evidenceExtensions=readFixture('consequential-evidence-actions.json');
+for(const kind of ['creditIntent','amendmentIntent']) {
+  const source=evidenceProjectionRequest();source.intent=structuredClone(evidenceExtensions[kind]);source.decisionCardRequest.items=[];
+  source.decisionCardRequest.financialSnapshot.observations[1].ledgerEffect.amount=structuredClone(source.intent.transaction.amount);
+  if(kind==='amendmentIntent') {source.currentLedger.transactions=[structuredClone(source.intent.expected)];source.decisionCardRequest.financialSnapshot.legacySnapshot.transactions=[structuredClone(source.intent.expectedSource)];}
+  source.intent.resolutionSubjectId=source.decisionCardRequest.financialSnapshot.observations[1].scope.id;
+  const nullSelector=structuredClone(source);nullSelector.intent.resolutionSubjectId=null;assert.throws(()=>planAction(nullSelector));
+  const planned=planAction(source);assert.equal(planned.action.kind,source.intent.kind);assert.equal(verifyAction(planned,source,'preconditions').valid,true);
+  const stale=structuredClone(source);stale.resolvedEvidence[1].contentHash='changed';assert.equal(verifyAction(planned,stale,'preconditions').valid,false);
+}
+console.log('native evidence credit and amendment boundary contracts passed');
+
+const statement = evidenceProjectionRequest();
+statement.intent = structuredClone(evidenceExtensions.creditIntent);
+statement.decisionCardRequest.items = [];
+const statementProof = statement.decisionCardRequest.financialSnapshot.observations[1];
+statementProof.ledgerEffect.amount = structuredClone(statement.intent.transaction.amount);
+const secondProof = structuredClone(statementProof);
+secondProof.scope.id = 'statement-event-two';
+secondProof.contentHash = 'statement-event-two-hash';
+statement.decisionCardRequest.financialSnapshot.observations.push(secondProof);
+const secondReference = structuredClone(statement.resolvedEvidence.find(row => row.evidenceId === statement.intent.evidenceIds[0]));
+secondReference.subjectId = secondProof.scope.id;
+secondReference.contentHash = secondProof.contentHash;
+statement.resolvedEvidence.push(secondReference);
+assert.throws(() => planAction(statement), /ambiguous_evidence_resolution/);
+statement.intent.resolutionSubjectId = statementProof.scope.id;
+const firstStatementPlan = planAction(statement);
+assert.equal(firstStatementPlan.evidenceReferences[0].subjectId, statementProof.scope.id);
+const secondStatementAction = structuredClone(statement.intent);
+secondStatementAction.resolutionSubjectId = secondProof.scope.id;
+secondStatementAction.transaction.parentId = 'statement-credit-two';
+secondStatementAction.transaction.correlationId = 'statement-correlation-two';
+statement.intent = { kind: 'composite', actions: [statement.intent, secondStatementAction] };
+const statementPlan = planAction(statement);
+assert.equal(statementPlan.evidenceReferences.length, 2);
+assert.equal(verifyAction(statementPlan, statement, 'preconditions').valid, true);
+statement.intent.actions[1].resolutionSubjectId = statementProof.scope.id;
+assert.throws(() => planAction(statement), /duplicate_projection_evidence/);
+console.log('native shared statement scope selection contracts passed');

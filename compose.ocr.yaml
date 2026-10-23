@@ -1,0 +1,41 @@
+# Explicit opt-in: docker compose -f compose.yaml -f compose.ocr.yaml --profile receipt-ocr up -d --build
+services:
+  balanceframe:
+    environment:
+      - BALANCEFRAME_RECEIPT_OCR_URL=http://receipt-ocr:8088
+    networks:
+      - default
+      - receipt-ocr
+  receipt-ocr:
+    profiles: [receipt-ocr]
+    image: balanceframe-receipt-ocr:5.5.3-4.1.0
+    build:
+      context: .
+      dockerfile: packages/receipt-ocr/Dockerfile
+    restart: unless-stopped
+    user: '1000:1000'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [receipt-ocr]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 32
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          --input-type=module,
+          -e,
+          "const r=await fetch('http://127.0.0.1:8088/health',{signal:AbortSignal.timeout(2000)});if(!r.ok)process.exit(1)",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+networks:
+  receipt-ocr:
+    internal: true

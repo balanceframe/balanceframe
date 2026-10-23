@@ -634,6 +634,27 @@ describe('raw spend-session cart persistence and authorization', () => {
     ).toThrow();
   });
 
+  it('fences archived session versions without returning expired content or relaxing normal reads', () => {
+    const input = sessionInput('archive-version', 0, 'archive-version-create', {
+      expiresAt: expiration, items: [{ ...rawItem(), requiredBy: '2098-01-15T00:00:00.000Z' }],
+    });
+    const session = saveSession(input, () => ({ valid: true }));
+    const check = { ...liquidityContext(ownerId, expiration), id: session.id, expectedVersion: session.version };
+    expect(() => store.liquidity.getSpendSession(check)).toThrow();
+    expect(store.liquidity.hasCurrentSpendSessionVersion(check)).toBe(true);
+    expect(store.liquidity.hasCurrentSpendSessionVersion({ ...check, expectedVersion: session.version + 1 })).toBe(false);
+    expect(store.liquidity.hasCurrentSpendSessionVersion({ ...check, expectedVersion: NaN })).toBe(false);
+    expect(store.liquidity.hasCurrentSpendSessionVersion({ ...liquidityContext(approverId, expiration), id: session.id, expectedVersion: session.version })).toBe(false);
+    provisionGrant(ownerId, 'category', 'category', 'food', false, expiration);
+    expect(store.liquidity.hasCurrentSpendSessionVersion(check)).toBe(false);
+  });
+  it('invalidates an archived version fence after an ordinary saved cart update', () => {
+    const session = saveSession(sessionInput('archive-update', 0, 'archive-update-create'), () => ({ valid: true }));
+    const check = { ...liquidityContext(ownerId), id: session.id, expectedVersion: session.version };
+    expect(store.liquidity.hasCurrentSpendSessionVersion(check)).toBe(true);
+    saveSession(sessionInput(session.id, session.version, 'archive-update-next'), () => ({ valid: true }));
+    expect(store.liquidity.hasCurrentSpendSessionVersion(check)).toBe(false);
+  });
   it('filters expired sessions and cancels with CAS while preserving all raw cart source fields', () => {
     const expiringInput = sessionInput('expiring', 0, 'expiring-create', {
       expiresAt: expiration,

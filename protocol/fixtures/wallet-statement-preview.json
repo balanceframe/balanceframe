@@ -1,0 +1,31 @@
+{
+  "contractVersion": "1",
+  "walletId": "wallet",
+  "currency": "USD",
+  "startDate": "2026-10-15",
+  "endDate": "2026-10-16",
+  "activityManifest": [
+    {
+      "observationId": "wallet-1",
+      "documentId": "doc-wallet",
+      "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "parserVersion": "wallet-v1",
+      "normalizedFieldsHash": "fa6474d08188168e0b6537b647786f700ec0c52d06ac1724457cd9b2c8b71cdc"
+    }
+  ],
+  "activityManifestHash": "5c74da518fd758f203b6a0b2abbc9f6490693f43c53a47f05a20c8d8d2d1f22e",
+  "netChange": {
+    "minorUnits": "-100",
+    "currency": "USD"
+  },
+  "inflows": {
+    "minorUnits": "0",
+    "currency": "USD"
+  },
+  "outflows": {
+    "minorUnits": "100",
+    "currency": "USD"
+  },
+  "excludedObservationIds": [],
+  "reasonCodes": ["human_attestation_required"]
+}

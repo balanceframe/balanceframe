@@ -190,3 +190,10 @@ export type {
   MerchantAttemptAdmission,
   MerchantAttemptOutcome,
 } from './merchant.js';
+
+export * from './transaction-evidence.js';
+
+export * from './evidence-item-rules.js';
+
+export { SpendSessionEvidenceWorkflow } from './spend-session-evidence.js';
+export type { SpendSessionReceiptAssociation } from './spend-session-evidence.js';

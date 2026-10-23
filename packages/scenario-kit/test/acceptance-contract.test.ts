@@ -35,7 +35,7 @@ const selected = { 'funded-purchase': [] };
 describe('scenario acceptance coverage', () => {
   it('keeps every catalog scenario registered exactly once', () => {
     const catalogIds = listScenarios().map(({ id }) => id);
-    expect(catalogIds).toHaveLength(40);
+    expect(catalogIds).toHaveLength(45);
     expect([...catalogIds].sort()).toEqual(Object.keys(SCENARIO_ACCEPTANCE_CONTRACT).sort());
   });
 

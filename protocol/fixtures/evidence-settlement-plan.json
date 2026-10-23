@@ -1,0 +1,275 @@
+{
+  "contractVersion": "1",
+  "evidence": {
+    "contractVersion": "1",
+    "policyVersion": "evidence-policy-1",
+    "maxSettlementDays": 5,
+    "observations": [
+      {
+        "id": "bank-1",
+        "kind": "ledger_transaction",
+        "sourceId": "actual",
+        "externalEventId": null,
+        "date": "2026-10-16",
+        "amount": {
+          "minorUnits": "1200",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "purchase",
+        "counterparty": "person-1",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": "actual-bank-1",
+        "ledgerEffect": null,
+        "reliability": 100,
+        "provenance": {
+          "documentId": "doc-bank",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parserVersion": "actual-v1",
+          "sourceTimestamp": "2026-10-16T12:00:00Z",
+          "receivedAt": "2026-10-16T12:01:00Z"
+        },
+        "ledgerAccountId": "checking"
+      },
+      {
+        "id": "purchase-1",
+        "kind": "receipt",
+        "sourceId": "retail-1",
+        "externalEventId": null,
+        "date": "2026-10-15",
+        "amount": {
+          "minorUnits": "400",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "purchase",
+        "counterparty": "person-1",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": null,
+        "ledgerEffect": null,
+        "reliability": 0,
+        "provenance": {
+          "documentId": "doc-receipt-1",
+          "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "parserVersion": "wallet-v1",
+          "sourceTimestamp": "2026-10-15T12:00:00Z",
+          "receivedAt": "2026-10-15T12:01:00Z"
+        }
+      },
+      {
+        "id": "purchase-2",
+        "kind": "receipt",
+        "sourceId": "retail-2",
+        "externalEventId": null,
+        "date": "2026-10-15",
+        "amount": {
+          "minorUnits": "800",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "purchase",
+        "counterparty": "person-1",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": null,
+        "ledgerEffect": null,
+        "reliability": 0,
+        "provenance": {
+          "documentId": "doc-receipt-2",
+          "contentHash": "2222222222222222222222222222222222222222222222222222222222222222",
+          "parserVersion": "wallet-v1",
+          "sourceTimestamp": "2026-10-15T12:00:00Z",
+          "receivedAt": "2026-10-15T12:01:00Z"
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "id": "funding-1",
+        "fromId": "purchase-1",
+        "toId": "bank-1",
+        "kind": "partial_funding",
+        "state": "confirmed",
+        "allocatedAmount": {
+          "minorUnits": "400",
+          "currency": "USD"
+        },
+        "partial": true,
+        "score": 100,
+        "reasonCodes": ["human_reviewed"],
+        "evidenceIds": ["doc-receipt-1"]
+      },
+      {
+        "id": "funding-2",
+        "fromId": "purchase-2",
+        "toId": "bank-1",
+        "kind": "partial_funding",
+        "state": "confirmed",
+        "allocatedAmount": {
+          "minorUnits": "800",
+          "currency": "USD"
+        },
+        "partial": true,
+        "score": 100,
+        "reasonCodes": ["human_reviewed"],
+        "evidenceIds": ["doc-receipt-2"]
+      }
+    ],
+    "wallets": [],
+    "receipts": [
+      {
+        "id": "receipt-1",
+        "observationId": "purchase-1",
+        "version": 1,
+        "supersedesId": null,
+        "fulfillmentGroupId": null,
+        "total": {
+          "minorUnits": "400",
+          "currency": "USD"
+        },
+        "discount": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "tax": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "lines": [
+          {
+            "id": "line-1",
+            "rawDescription": "two items",
+            "normalizedDescription": "item",
+            "sku": "sku-1",
+            "department": null,
+            "productFamily": null,
+            "quantityMicros": 1000000,
+            "unitGross": {
+              "minorUnits": "400",
+              "currency": "USD"
+            },
+            "gross": {
+              "minorUnits": "400",
+              "currency": "USD"
+            },
+            "discount": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "tax": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "net": {
+              "minorUnits": "400",
+              "currency": "USD"
+            },
+            "categoryId": null,
+            "memberId": null,
+            "evidenceStrength": 0,
+            "reasonCodes": [],
+            "returnOfLineId": null
+          }
+        ],
+        "tenders": [
+          {
+            "id": "card-1",
+            "kind": "card",
+            "amount": {
+              "minorUnits": "400",
+              "currency": "USD"
+            },
+            "observationId": "bank-1",
+            "partial": true
+          }
+        ]
+      },
+      {
+        "id": "receipt-2",
+        "observationId": "purchase-2",
+        "version": 1,
+        "supersedesId": null,
+        "fulfillmentGroupId": null,
+        "total": {
+          "minorUnits": "800",
+          "currency": "USD"
+        },
+        "discount": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "tax": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "lines": [
+          {
+            "id": "line-2",
+            "rawDescription": "two items",
+            "normalizedDescription": "item",
+            "sku": "sku-1",
+            "department": null,
+            "productFamily": null,
+            "quantityMicros": 1000000,
+            "unitGross": {
+              "minorUnits": "800",
+              "currency": "USD"
+            },
+            "gross": {
+              "minorUnits": "800",
+              "currency": "USD"
+            },
+            "discount": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "tax": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "net": {
+              "minorUnits": "800",
+              "currency": "USD"
+            },
+            "categoryId": null,
+            "memberId": null,
+            "evidenceStrength": 0,
+            "reasonCodes": [],
+            "returnOfLineId": null
+          }
+        ],
+        "tenders": [
+          {
+            "id": "card-2",
+            "kind": "card",
+            "amount": {
+              "minorUnits": "800",
+              "currency": "USD"
+            },
+            "observationId": "bank-1",
+            "partial": true
+          }
+        ]
+      }
+    ]
+  },
+  "targetObservationId": "bank-1",
+  "receiptIds": ["receipt-1", "receipt-2"],
+  "lineCategories": [
+    {
+      "receiptId": "receipt-1",
+      "lineId": "line-1",
+      "categoryId": "food"
+    },
+    {
+      "receiptId": "receipt-2",
+      "lineId": "line-2",
+      "categoryId": "household"
+    }
+  ]
+}

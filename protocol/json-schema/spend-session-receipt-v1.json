@@ -1,0 +1,463 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/spend-session-receipt-v1.json",
+  "title": "Comparison-only archived SpendSession receipt reconciliation v1",
+  "description": "Pure comparison does not attest origin or grant source access. Native validation additionally checks exact archive hashes, receipt conservation, review endpoint uniqueness and purchase coverage.",
+  "$comment": "Planned amounts are references only and never settle.",
+  "$ref": "#/$defs/CompareSpendSessionReceiptRequest",
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?!\\s*$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "SavedSessionReceiptItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "categoryId",
+        "amount",
+        "purchaseAt",
+        "requiredBy",
+        "accountId",
+        "priceProvenance"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "categoryId": {
+          "$ref": "#/$defs/Id"
+        },
+        "amount": {
+          "$ref": "https://balanceframe.dev/schemas/decision-card-v1.json#/$defs/PositiveMoney"
+        },
+        "purchaseAt": {
+          "$ref": "https://balanceframe.dev/schemas/decision-card-v1.json#/$defs/UtcTimestamp"
+        },
+        "requiredBy": {
+          "$ref": "https://balanceframe.dev/schemas/decision-card-v1.json#/$defs/UtcTimestamp"
+        },
+        "priority": {
+          "$ref": "https://balanceframe.dev/schemas/decision-card-v1.json#/$defs/Priority"
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "categoryAllocations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/decision-card-v1.json#/$defs/DecisionCardCategoryAllocation"
+          },
+          "maxItems": 100
+        },
+        "barcode": {
+          "$ref": "#/$defs/Id"
+        },
+        "priceProvenance": {
+          "anyOf": [
+            {
+              "$ref": "https://balanceframe.dev/schemas/decision-card-v1.json#/$defs/DecisionCardPriceProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accountId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "SavedSessionReceiptIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "version",
+        "accountId",
+        "items",
+        "adjustments",
+        "warningThresholds"
+      ],
+      "properties": {
+        "kind": {
+          "const": "session_completion_intent_v1"
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "accountId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SavedSessionReceiptItem"
+          },
+          "maxItems": 100
+        },
+        "adjustments": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/decision-card-v1.json#/$defs/DecisionCardAdjustment"
+          },
+          "maxItems": 100
+        },
+        "warningThresholds": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/decision-card-v1.json#/$defs/DecisionCardWarningThreshold"
+          },
+          "maxItems": 100
+        }
+      }
+    },
+    "SessionReceiptSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentId", "contentHash", "parserVersion", "intentHash", "intent"],
+      "properties": {
+        "documentId": {
+          "$ref": "#/$defs/Id"
+        },
+        "contentHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "parserVersion": {
+          "$ref": "#/$defs/Id"
+        },
+        "intentHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "intent": {
+          "$ref": "#/$defs/SavedSessionReceiptIntent"
+        }
+      }
+    },
+    "SessionReceiptSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentId", "receiptId"],
+      "properties": {
+        "documentId": {
+          "$ref": "#/$defs/Id"
+        },
+        "receiptId": {
+          "$ref": "#/$defs/Id"
+        }
+      }
+    },
+    "SessionReceiptPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionItemId", "receiptLineId", "kind"],
+      "properties": {
+        "sessionItemId": {
+          "$ref": "#/$defs/Id"
+        },
+        "receiptLineId": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": ["same_item", "substitution"]
+        }
+      }
+    },
+    "SessionReceiptReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage", "pairs", "omittedItemIds", "newLineIds"],
+      "properties": {
+        "coverage": {
+          "enum": ["complete_purchase", "partial_purchase", "unknown"]
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionReceiptPair"
+          },
+          "maxItems": 100
+        },
+        "omittedItemIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 100
+        },
+        "newLineIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 1000
+        }
+      }
+    },
+    "CompareSpendSessionReceiptRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "sessionSnapshot", "evidence", "receipt", "review"],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "sessionSnapshot": {
+          "$ref": "#/$defs/SessionReceiptSnapshot"
+        },
+        "evidence": {
+          "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/TransactionEvidenceRequest"
+        },
+        "receipt": {
+          "$ref": "#/$defs/SessionReceiptSelection"
+        },
+        "review": {
+          "$ref": "#/$defs/SessionReceiptReview"
+        }
+      }
+    },
+    "SessionReceiptRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionItemId",
+        "receiptLineId",
+        "status",
+        "changes",
+        "quantityComparison",
+        "priceComparison",
+        "priceBasis",
+        "plannedQuantityMicros",
+        "observedQuantityMicros",
+        "plannedReference",
+        "observedReference",
+        "reasonCodes"
+      ],
+      "properties": {
+        "sessionItemId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receiptLineId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": ["matched", "substituted", "new", "omitted", "unresolved"]
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "enum": ["quantity_changed", "reference_price_changed", "line_amount_changed"]
+          }
+        },
+        "quantityComparison": {
+          "enum": ["unknown", "same", "changed"]
+        },
+        "priceComparison": {
+          "enum": ["unknown", "same", "changed", "currency_mismatch"]
+        },
+        "priceBasis": {
+          "anyOf": [
+            {
+              "enum": ["unit_amount_vs_unit_gross", "line_amount_vs_line_gross"]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plannedQuantityMicros": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295000000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedQuantityMicros": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plannedReference": {
+          "anyOf": [
+            {
+              "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/PositiveMoney"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedReference": {
+          "anyOf": [
+            {
+              "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/PositiveMoney"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "enum": ["currency_mismatch", "estimated_reference_price"]
+          }
+        }
+      }
+    },
+    "SessionReceiptCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionItemId", "receiptLineId", "reasonCodes"],
+      "properties": {
+        "sessionItemId": {
+          "$ref": "#/$defs/Id"
+        },
+        "receiptLineId": {
+          "$ref": "#/$defs/Id"
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "enum": ["identifier_text_match", "ambiguous_identifier"]
+          }
+        }
+      }
+    },
+    "CompareSpendSessionReceiptResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "authority",
+        "comparisonHash",
+        "sessionDocumentId",
+        "sessionId",
+        "sessionVersion",
+        "intentHash",
+        "receiptDocumentId",
+        "receiptId",
+        "resolutionHash",
+        "state",
+        "receiptTotal",
+        "rows",
+        "candidates",
+        "reasonCodes"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "authority": {
+          "const": "comparison_only"
+        },
+        "comparisonHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "sessionDocumentId": {
+          "$ref": "#/$defs/Id"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/Id"
+        },
+        "sessionVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "intentHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "receiptDocumentId": {
+          "$ref": "#/$defs/Id"
+        },
+        "receiptId": {
+          "$ref": "#/$defs/Id"
+        },
+        "resolutionHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "state": {
+          "enum": ["complete", "review_required", "blocked"]
+        },
+        "receiptTotal": {
+          "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/PositiveMoney"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionReceiptRow"
+          }
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionReceiptCandidate"
+          }
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "enum": ["receipt_not_valid_current_purchase", "purchase_coverage_incomplete"]
+          }
+        }
+      }
+    }
+  }
+}

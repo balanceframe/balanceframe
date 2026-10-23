@@ -20,6 +20,7 @@ import type {
   TransferPlan,
 } from '@balanceframe/protocol-generated';
 import type { TransferState } from './liquidity-types.js';
+import type { TransactionEvidenceWorkflow } from './transaction-evidence.js';
 import type { LiquidityWorkflow } from './liquidity.js';
 import type { SpaceGovernance } from './governance.js';
 import type { GovernanceDisposition, HumanControlContext, OperationalAuth } from './governance-types.js';
@@ -1029,6 +1030,7 @@ export interface RemoveRuleOverrideInput extends GetRuleOverrideInput {
 export interface WorkflowStore {
   readonly governance: SpaceGovernance;
   readonly liquidity: LiquidityWorkflow;
+  readonly evidence: TransactionEvidenceWorkflow;
   // ── Suggestion lifecycle ───────────────────────────────────────────
 
   /**

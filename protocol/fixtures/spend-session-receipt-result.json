@@ -1,0 +1,58 @@
+{
+  "contractVersion": "1",
+  "authority": "comparison_only",
+  "comparisonHash": "742907b079aff4ec67a742977c392009b99a3de2eb4859062515bf284e6fcbd1",
+  "sessionDocumentId": "doc-session",
+  "sessionId": "session-1",
+  "sessionVersion": 2,
+  "intentHash": "b08591f96d5cc3b73a971ff4f75c86ad19549da9997fb19e7bca643c6b306bd0",
+  "receiptDocumentId": "doc-receipt",
+  "receiptId": "receipt-1",
+  "resolutionHash": "f4b6e35d13b430dd077d2d6337ff3912413bccfa021ff2ed536a8e674c97393a",
+  "state": "complete",
+  "receiptTotal": {
+    "minorUnits": "1200",
+    "currency": "USD"
+  },
+  "rows": [
+    {
+      "sessionItemId": "item-1",
+      "receiptLineId": "line-1",
+      "status": "matched",
+      "changes": [],
+      "quantityComparison": "same",
+      "priceComparison": "same",
+      "priceBasis": "unit_amount_vs_unit_gross",
+      "plannedQuantityMicros": 2000000,
+      "observedQuantityMicros": 2000000,
+      "plannedReference": {
+        "minorUnits": "600",
+        "currency": "USD"
+      },
+      "observedReference": {
+        "minorUnits": "600",
+        "currency": "USD"
+      },
+      "reasonCodes": []
+    },
+    {
+      "sessionItemId": "item-omitted",
+      "receiptLineId": null,
+      "status": "omitted",
+      "changes": [],
+      "quantityComparison": "unknown",
+      "priceComparison": "unknown",
+      "priceBasis": null,
+      "plannedQuantityMicros": 1000000,
+      "observedQuantityMicros": null,
+      "plannedReference": {
+        "minorUnits": "100",
+        "currency": "USD"
+      },
+      "observedReference": null,
+      "reasonCodes": []
+    }
+  ],
+  "candidates": [],
+  "reasonCodes": []
+}

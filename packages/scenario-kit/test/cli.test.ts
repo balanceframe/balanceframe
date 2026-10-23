@@ -198,13 +198,21 @@ describe('root scenario commands', () => {
             catalogVersion: string;
             anchor: string;
             assertions: { count: number };
-            evidence: { backend: string };
+            evidence: { backend: string; actualWrite: boolean };
           },
       );
     expect(reports.map((report) => report.faultId).sort()).toEqual([
       'ambiguous-transfer',
       'authoritative-schedule-claim-overlap',
       'completion-crash-retry',
+      'evidence-photo-ocr-absent-manual',
+      'evidence-photo-ocr-failing-manual',
+      'evidence-plural-amendment-lost-ack',
+      'evidence-receipt-inference-late-consent',
+      'evidence-receipt-inference-late-grant',
+      'evidence-receipt-inference-late-policy',
+      'evidence-receipt-inference-late-source',
+      'evidence-wallet-opening-lost-ack',
       'source-coverage-receipt-integrity:duplicate',
       'source-coverage-receipt-integrity:missing',
     ]);
@@ -212,8 +220,13 @@ describe('root scenario commands', () => {
       expect(report).toMatchObject({
         status: 'passed',
         catalogVersion: '1',
-        anchor: '2026-09-06T12:00:00.000Z',
-        evidence: { backend: 'native-service-fault' },
+        anchor: report.faultId.startsWith('evidence-')
+          ? '2026-10-21T12:00:00.000Z' : '2026-09-06T12:00:00.000Z',
+        evidence: {
+          backend: report.faultId.startsWith('evidence-')
+            ? 'synthetic-evidence-service-fault' : 'native-service-fault',
+          actualWrite: false,
+        },
       });
       expect(report.assertions.count).toBeGreaterThan(0);
     }

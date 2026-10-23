@@ -556,6 +556,10 @@ function approvedFinancialWrite(path: string, method: string): boolean {
 
 function setupWrite(path: string, method: string, manifest: DemoManifest): boolean {
   return (
+    (manifest.scenarioId?.startsWith('evidence-') && method === 'POST' &&
+      (path === '/api/evidence' || path === '/api/evidence/resolve')) ||
+    (['evidence-plural-allocation', 'evidence-wallet-statement'].includes(manifest.scenarioId ?? '') &&
+      method === 'PUT' && /^\/api\/spaces\/[^/]+\/policy$/.test(path)) ||
     (manifest.scenarioId === 'governance-delegated-assistant' && method === 'POST' &&
       (path === '/api/auth/api-key/create' || /^\/api\/spaces\/[^/]+\/(?:agents|delegations|credentials)$/.test(path))) ||
     (manifest.scenarioId?.startsWith('merchant-') && method === 'PUT' &&
@@ -630,8 +634,10 @@ export function enforceDemoBoundary(event: EventWithContext): Record<string, unk
     if (pathSpace && pathSpace !== manifest.spaceId) return disabled(boundaryEvent, 403);
     const merchantPath = manifest.scenarioId?.startsWith('merchant-') &&
       /^\/api\/(?:merchant|review|proposal|rule)(?:\/|$)/.test(path);
+    const evidencePath = manifest.scenarioId?.startsWith('evidence-') &&
+      /^\/api\/(?:evidence|proposal)(?:\/|$)/.test(path);
     const selected = selectedSpace(boundaryEvent);
-    if ((scenarioFeatureWrite(manifest.scenarioId, method, path) || merchantPath) &&
+    if ((scenarioFeatureWrite(manifest.scenarioId, method, path) || merchantPath || evidencePath) &&
       selected !== null && selected !== manifest.spaceId) return disabled(boundaryEvent, 403);
   }
 

@@ -1,3 +1,4 @@
+import { ledgerEvidenceHash } from './evidence-ledger-source.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadNativeBindings } from './composition.js';
 import type { NativeBindingShim } from './composition.js';
@@ -5,10 +6,12 @@ import { z } from 'zod';
 import { ApplicationError } from './errors.js';
 import type {
   AtomicConsequentialActionIntent,
+  EvidenceAllocationReview,
   ConsequentialActionEvidence,
   ConsequentialActionIntent,
   ConsequentialActionLedger,
   ConsequentialActionPlan,
+  ManualTransactionIntent,
   EconomicEventLedgerEffect,
   TransferSettlementRecord,
   ConsequentialActionVerification,
@@ -18,6 +21,8 @@ import type {
   VerifyConsequentialActionRequest,
 } from '@balanceframe/protocol-generated';
 import {
+  canonicalTransactionSchema,
+  EvidenceAllocationReviewSchema,
   consequentialActionIntentSchema,
   consequentialActionPlanSchema,
   consequentialActionVerificationSchema,
@@ -39,12 +44,16 @@ import type {
   SupplementalFactsRecord,
   WorkflowStore,
 } from '@balanceframe/workflow-store';
-import { GENERIC_MUTATION_POLICY_VERSION, canonicalProposalJson } from '@balanceframe/workflow-store';
+import {
+  GENERIC_MUTATION_POLICY_VERSION,
+  canonicalProposalJson,
+} from '@balanceframe/workflow-store';
 import {
   issueConsequentialActionInvalidationToken,
   issueConsequentialActionVerificationToken,
 } from '@balanceframe/workflow-store/internal';
 import type {
+  EvidenceTransactionSource,
   BudgetAssignmentPrecondition,
   BudgetLedger,
   BudgetAssignmentResult,
@@ -56,7 +65,16 @@ import type {
   WalletAccountResult,
 } from '@balanceframe/actual-adapter';
 import type { ConnectedBudget } from './connection-manager.js';
-import type { ConsequentialActionCapture, ConsequentialActionDecision, LiquidityService } from './liquidity-service.js';
+import type {
+  ConsequentialActionCapture,
+  ConsequentialActionDecision,
+  LiquidityService,
+} from './liquidity-service.js';
+import {
+  bindWalletOpening,
+  walletAnchorEvidence,
+  verifiedWalletAccount,
+} from './wallet-opening.js';
 import { spendSessionInputSchema } from './liquidity-inputs.js';
 import type { SpendSession } from '@balanceframe/workflow-store';
 
@@ -72,11 +90,21 @@ export interface ConsequentialActionServiceOptions {
   clock?: () => Date;
 }
 
-type StoredConsequentialActionProposal = Extract<GenericActionProposal, { operation: 'consequential_action' }>;
+type StoredConsequentialActionProposal = Extract<
+  GenericActionProposal,
+  { operation: 'consequential_action' }
+>;
 type ConsequentialActionState = StoredConsequentialActionProposal['state'];
 export interface ConsequentialActionDecisionItem extends Pick<
   DecisionCardRequest['items'][number],
-  'id' | 'categoryId' | 'amount' | 'purchaseAt' | 'requiredBy' | 'priority' | 'quantity' | 'categoryAllocations'
+  | 'id'
+  | 'categoryId'
+  | 'amount'
+  | 'purchaseAt'
+  | 'requiredBy'
+  | 'priority'
+  | 'quantity'
+  | 'categoryAllocations'
 > {
   readonly accountId: string | null;
 }
@@ -103,10 +131,18 @@ export type ConsequentialActionPublicPlan = Omit<
 > & {
   readonly source: ConsequentialActionPublicSource;
   readonly evidenceReferences: readonly ConsequentialActionPublicEvidenceReference[];
+  readonly allocationReviews?: readonly EvidenceAllocationReview[];
 };
 export type ConsequentialActionProposal = Pick<
   StoredConsequentialActionProposal,
-  'id' | 'budgetId' | 'spaceId' | 'policyVersion' | 'expiresAt' | 'supersededAt' | 'createdAt' | 'version'
+  | 'id'
+  | 'budgetId'
+  | 'spaceId'
+  | 'policyVersion'
+  | 'expiresAt'
+  | 'supersededAt'
+  | 'createdAt'
+  | 'version'
 > & {
   readonly operation: 'consequential_action';
   readonly requesterActorId: string;
@@ -117,7 +153,10 @@ export type ConsequentialActionProposal = Pick<
   readonly currentFinancialPolicyVersion: string | null;
   readonly requiredApprovers: number;
   readonly decisionContext: ConsequentialActionDecisionContext | null;
-  readonly payload: { readonly kind: 'consequential_action'; readonly plan: ConsequentialActionPublicPlan };
+  readonly payload: {
+    readonly kind: 'consequential_action';
+    readonly plan: ConsequentialActionPublicPlan;
+  };
   readonly state: Pick<ConsequentialActionState, 'phase' | 'outcome'>;
 };
 export interface ConsequentialActionExecution {
@@ -133,6 +172,8 @@ type ActionDecisionCart = Extract<ActionDecision, { readonly accountId: string |
 type ActionDecisionItems = ActionDecisionCart['items'];
 type ActionPreconditions = {
   readonly version: 1;
+  readonly amendmentSources?: readonly EvidenceTransactionSource[];
+  readonly allocationReviews?: readonly EvidenceAllocationReview[];
   readonly sourceReference: string;
   readonly nativeActionHash: string;
   readonly nativeSource: ConsequentialActionPlan['source'];
@@ -148,6 +189,66 @@ type ActionPreconditions = {
   readonly decisionValidUntil: string;
   readonly decisionContext: ConsequentialActionDecisionContext | null;
 };
+function allocationReferenceReadable(
+  capture: ConsequentialActionCapture,
+  evidenceId: string,
+): boolean {
+  if (!evidenceId.startsWith('actual:'))
+    return capture.projector.allowed('evidence', evidenceId, 'source');
+  const row = capture.snapshot.legacySnapshot.transactions.find(
+    (row) => `actual:${ledgerEvidenceHash(row)}` === evidenceId,
+  );
+  if (!row) return false;
+  return (
+    ['transaction.view', 'history', 'source'].every((right) =>
+      capture.projector.allowed('transaction', row.id, right),
+    ) &&
+    ['existence', 'history', 'name', 'source'].every((right) =>
+      capture.projector.allowed('account', row.accountId, right),
+    )
+  );
+}
+function actionAllocationReviews(
+  action: ConsequentialActionIntent,
+  snapshot: FinancialSnapshot,
+): EvidenceAllocationReview[] {
+  const reviews = new Map<string, EvidenceAllocationReview>();
+  const selected = action.kind === 'composite' ? action.actions : [action];
+  for (const atom of selected) {
+    if (
+      !['evidence_projection', 'evidence_credit', 'evidence_amendment'].includes(atom.kind) ||
+      !('evidenceIds' in atom)
+    )
+      continue;
+    for (const observation of snapshot.observations) {
+      if (
+        observation.kind !== 'economic_event_resolution' ||
+        observation.state !== 'resolved' ||
+        !observation.allocationReview ||
+        (atom.resolutionSubjectId !== undefined &&
+          (observation.scope.kind === 'global' ||
+            observation.scope.id !== atom.resolutionSubjectId)) ||
+        !atom.evidenceIds.every((id) =>
+          observation.evidence.some(
+            (reference) =>
+              reference.evidenceId === id &&
+              reference.authorized &&
+              reference.redaction === 'visible',
+          ),
+        )
+      )
+        continue;
+      const review = EvidenceAllocationReviewSchema.parse(observation.allocationReview);
+      const prior = reviews.get(review.allocationSetHash);
+      if (prior && canonical(prior) !== canonical(review))
+        throw new Error('Allocation manifest conflict');
+      reviews.set(review.allocationSetHash, review);
+    }
+  }
+  return [...reviews.values()].sort((a, b) =>
+    a.allocationSetHash.localeCompare(b.allocationSetHash),
+  );
+}
 type ProposalState = ConsequentialActionState;
 type ActionAtom = AtomicConsequentialActionIntent;
 type PostconditionAuthorization = {
@@ -163,17 +264,21 @@ const assistanceLevels: Record<AssistanceMaximum, number> = {
   execute_approved_actions: 3,
 };
 const idSchema = z.string().trim().min(1).max(256);
-const sessionSelectorSchema = z.object({
-  sessionId: idSchema,
-  sessionVersion: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
-}).strict();
-const pinnedDecisionSchema = z.object({
-  accountId: idSchema.nullable(),
-  items: spendSessionInputSchema.shape.items,
-  adjustments: spendSessionInputSchema.shape.adjustments,
-  warningThresholds: spendSessionInputSchema.shape.warningThresholds,
-  expiresAt: spendSessionInputSchema.shape.expiresAt,
-}).strict();
+const sessionSelectorSchema = z
+  .object({
+    sessionId: idSchema,
+    sessionVersion: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+const pinnedDecisionSchema = z
+  .object({
+    accountId: idSchema.nullable(),
+    items: spendSessionInputSchema.shape.items,
+    adjustments: spendSessionInputSchema.shape.adjustments,
+    warningThresholds: spendSessionInputSchema.shape.warningThresholds,
+    expiresAt: spendSessionInputSchema.shape.expiresAt,
+  })
+  .strict();
 type PinnedDecision = z.infer<typeof pinnedDecisionSchema>;
 const publicActionCartSchema = pinnedDecisionSchema.extend({
   expiresAt: spendSessionInputSchema.shape.expiresAt.optional(),
@@ -182,56 +287,91 @@ const actionDecisionSchema = z.union([
   z.object({ origin: sessionSelectorSchema }).strict(),
   publicActionCartSchema,
 ]);
-const proposeInputSchema = z.object({
-  action: consequentialActionIntentSchema,
-  decision: actionDecisionSchema.optional(),
-}).strict();
-const publicDecisionItemSchema = decisionCardItemSchema.pick({
-  id: true,
-  categoryId: true,
-  amount: true,
-  purchaseAt: true,
-  requiredBy: true,
-  priority: true,
-  quantity: true,
-  categoryAllocations: true,
-}).extend({ accountId: idSchema.nullable() }).strict();
-const decisionContextSchema = z.object({
-  horizon: z.object({ startsAt: z.string(), endsAt: z.string() }).strict(),
-  validUntil: z.string(),
-  items: z.array(publicDecisionItemSchema),
-  adjustments: z.array(decisionCardAdjustmentSchema).optional(),
-  warningThresholds: z.array(decisionCardWarningThresholdSchema).optional(),
-}).strict().nullable();
-const storedPreconditionsSchema = z.object({
-  version: z.literal(1),
-  sourceReference: z.string().uuid(),
-  nativeActionHash: z.string().regex(/^[0-9a-f]{64}$/),
-  nativeSource: consequentialActionPlanSchema.shape.source,
-  decisionCardPolicyHash: z.string().min(1),
-  financialApprovalPolicy: z.object({
-    version: z.string().min(1),
-    policyHash: z.string().min(1),
-  }).strict(),
-  supplemental: z.unknown(),
-  supplementalHash: z.string().regex(/^[0-9a-f]{64}$/),
-  decision: actionDecisionSchema.nullable(),
-  sessionCart: pinnedDecisionSchema.nullable(),
-  recoveryDecision: pinnedDecisionSchema.nullable(),
-  sessionCartHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
-  decisionHorizon: z.object({ startsAt: z.string(), endsAt: z.string() }).strict(),
-  decisionValidUntil: z.string(),
-  decisionContext: decisionContextSchema,
-}).strict();
-function capturedDecisionContext(request: DecisionCardRequest): ConsequentialActionDecisionContext | null {
-  if (!request.items.length && !request.adjustments?.length && !request.warningThresholds?.length) return null;
+const proposeInputSchema = z
+  .object({
+    action: consequentialActionIntentSchema,
+    decision: actionDecisionSchema.optional(),
+  })
+  .strict();
+const publicDecisionItemSchema = decisionCardItemSchema
+  .pick({
+    id: true,
+    categoryId: true,
+    amount: true,
+    purchaseAt: true,
+    requiredBy: true,
+    priority: true,
+    quantity: true,
+    categoryAllocations: true,
+  })
+  .extend({ accountId: idSchema.nullable() })
+  .strict();
+const decisionContextSchema = z
+  .object({
+    horizon: z.object({ startsAt: z.string(), endsAt: z.string() }).strict(),
+    validUntil: z.string(),
+    items: z.array(publicDecisionItemSchema),
+    adjustments: z.array(decisionCardAdjustmentSchema).optional(),
+    warningThresholds: z.array(decisionCardWarningThresholdSchema).optional(),
+  })
+  .strict()
+  .nullable();
+const storedPreconditionsSchema = z
+  .object({
+    version: z.literal(1),
+    allocationReviews: z.array(EvidenceAllocationReviewSchema).max(100).optional(),
+    amendmentSources: z
+      .array(
+        z
+          .object({
+            budgetId: z.string(),
+            accountId: z.string(),
+            transactionId: z.string(),
+            fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+            parent: z.record(z.unknown()),
+            children: z.array(z.record(z.unknown())),
+            transaction: canonicalTransactionSchema,
+          })
+          .strict(),
+      )
+      .optional(),
+    sourceReference: z.string().uuid(),
+    nativeActionHash: z.string().regex(/^[0-9a-f]{64}$/),
+    nativeSource: consequentialActionPlanSchema.shape.source,
+    decisionCardPolicyHash: z.string().min(1),
+    financialApprovalPolicy: z
+      .object({
+        version: z.string().min(1),
+        policyHash: z.string().min(1),
+      })
+      .strict(),
+    supplemental: z.unknown(),
+    supplementalHash: z.string().regex(/^[0-9a-f]{64}$/),
+    decision: actionDecisionSchema.nullable(),
+    sessionCart: pinnedDecisionSchema.nullable(),
+    recoveryDecision: pinnedDecisionSchema.nullable(),
+    sessionCartHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    decisionHorizon: z.object({ startsAt: z.string(), endsAt: z.string() }).strict(),
+    decisionValidUntil: z.string(),
+    decisionContext: decisionContextSchema,
+  })
+  .strict();
+function capturedDecisionContext(
+  request: DecisionCardRequest,
+): ConsequentialActionDecisionContext | null {
+  if (!request.items.length && !request.adjustments?.length && !request.warningThresholds?.length)
+    return null;
   return {
     horizon: request.context.horizon,
     validUntil: request.validUntil,
     items: request.items.map((item) => ({
       id: item.id,
       categoryId: item.categoryId,
-      accountId: item.routeSelection.explicitAccountId ??
+      accountId:
+        item.routeSelection.explicitAccountId ??
         item.routeSelection.sessionAccountId ??
         item.routeSelection.approvedPreference?.accountId ??
         item.routeSelection.historicalRoute?.accountId ??
@@ -241,26 +381,34 @@ function capturedDecisionContext(request: DecisionCardRequest): ConsequentialAct
       requiredBy: item.requiredBy,
       priority: item.priority,
       ...(item.quantity === undefined ? {} : { quantity: item.quantity }),
-      ...(item.categoryAllocations === undefined ? {} : { categoryAllocations: item.categoryAllocations }),
+      ...(item.categoryAllocations === undefined
+        ? {}
+        : { categoryAllocations: item.categoryAllocations }),
     })),
     ...(request.adjustments === undefined ? {} : { adjustments: jsonClone(request.adjustments) }),
-    ...(request.warningThresholds === undefined ? {} : { warningThresholds: jsonClone(request.warningThresholds) }),
+    ...(request.warningThresholds === undefined
+      ? {}
+      : { warningThresholds: jsonClone(request.warningThresholds) }),
   };
 }
-type SupplementalObservationProjection = PlanConsequentialActionRequest['supplementalObservations'][number];
+type SupplementalObservationProjection =
+  PlanConsequentialActionRequest['supplementalObservations'][number];
 function supplementalObservationProjections(
   capture: ConsequentialActionCapture,
 ): SupplementalObservationProjection[] {
   const supplemental = capture.supplemental;
   const now = Date.parse(capture.now);
   if (
-    !supplemental || Date.parse(supplemental.expiresAt) <= now ||
+    !supplemental ||
+    Date.parse(supplemental.expiresAt) <= now ||
     Date.parse(supplemental.createdAt) > now
-  ) return [];
+  )
+    return [];
   const facts = capture.snapshot.liquidity?.accounts ?? [];
   const output: SupplementalObservationProjection[] = [];
   for (const observation of supplemental.observations) {
-    if (Date.parse(observation.expiresAt) <= now || Date.parse(observation.observedAt) > now) continue;
+    if (Date.parse(observation.expiresAt) <= now || Date.parse(observation.observedAt) > now)
+      continue;
     const account = facts.find((entry) => entry.accountId === observation.accountId);
     if (!account) continue;
     const fields: SupplementalObservationProjection['fields'][number][] = [];
@@ -274,28 +422,40 @@ function supplementalObservationProjections(
     if (
       observation.currentLedgerConfirmed === true &&
       account.freshnessEvidence.source === 'user_attested'
-    ) fields.push('currentLedgerConfirmed');
+    )
+      fields.push('currentLedgerConfirmed');
     if (observation.holds !== undefined && account.holdsEvidence.source === 'user_attested')
       fields.push('holds');
     const reportedFlowIds = new Set((observation.unsettledFlows ?? []).map((flow) => flow.id));
     const flowIds = account.unsettledFlows
-      .filter((flow) => reportedFlowIds.has(flow.id) && flow.provenance === 'manual_ledger' &&
-        flow.matchedTransactionIds.every((id) => !baselineTransactionIds.has(id)))
+      .filter(
+        (flow) =>
+          reportedFlowIds.has(flow.id) &&
+          flow.provenance === 'manual_ledger' &&
+          flow.matchedTransactionIds.every((id) => !baselineTransactionIds.has(id)),
+      )
       .map((flow) => flow.id)
       .sort();
     if (observation.unsettledFlows !== undefined) fields.push('unsettledFlows');
-    const reportedObligationIds = new Set((observation.obligations ?? []).map((obligation) => obligation.id));
+    const reportedObligationIds = new Set(
+      (observation.obligations ?? []).map((obligation) => obligation.id),
+    );
     const obligationIds = account.obligations
-      .filter((obligation) => reportedObligationIds.has(obligation.id) &&
-        obligation.matchedTransactionIds.every((id) => !baselineTransactionIds.has(id)))
+      .filter(
+        (obligation) =>
+          reportedObligationIds.has(obligation.id) &&
+          obligation.matchedTransactionIds.every((id) => !baselineTransactionIds.has(id)),
+      )
       .map((obligation) => obligation.id)
       .sort();
     if (observation.obligations !== undefined) fields.push('obligations');
     if (
       observation.credit !== undefined &&
       (account.credit === null || account.credit?.evidence.source === 'user_attested')
-    ) fields.push('credit');
-    if (fields.length) output.push({ accountId: account.accountId, fields, flowIds, obligationIds });
+    )
+      fields.push('credit');
+    if (fields.length)
+      output.push({ accountId: account.accountId, fields, flowIds, obligationIds });
   }
   return output;
 }
@@ -313,7 +473,7 @@ function hash(value: unknown): string {
 }
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null;
 }
 function jsonClone<T>(value: T): T {
@@ -323,11 +483,16 @@ function atoms(action: ConsequentialActionIntent): ActionAtom[] {
   return action.kind === 'composite' ? action.actions : [action];
 }
 function actionCapability(kind: ActionAtom['kind'], phase: ActionPhase): ResourceCapability {
-  const prefix = kind === 'reallocation' ? 'reallocation'
-    : kind === 'manual_transaction' ? 'transaction'
-    : kind === 'evidence_projection' ? 'ledger_projection'
-    : kind === 'wallet_materialization' ? 'wallet_materialization'
-    : 'transfer';
+  const prefix =
+    kind === 'reallocation'
+      ? 'reallocation'
+      : kind === 'manual_transaction'
+        ? 'transaction'
+        : ['evidence_projection', 'evidence_credit', 'evidence_amendment'].includes(kind)
+          ? 'ledger_projection'
+          : kind === 'wallet_materialization'
+            ? 'wallet_materialization'
+            : 'transfer';
   return `${prefix}:${phase}`;
 }
 function actionResources(atom: ActionAtom, budgetId: string): ResourceRef[] {
@@ -344,13 +509,23 @@ function actionResources(atom: ActionAtom, budgetId: string): ResourceRef[] {
       }
       break;
     case 'manual_transaction':
+    case 'evidence_credit':
+    case 'evidence_amendment':
     case 'evidence_projection':
+      if (atom.kind === 'evidence_amendment') {
+        add('category', atom.expected.categoryId);
+        for (const split of atom.expected.splits) add('category', split.categoryId);
+      }
       add('account', atom.transaction.accountId);
       add('transaction', atom.transaction.parentId);
       add('ledger_effect', atom.transaction.parentId);
       add('category', atom.transaction.categoryId);
       for (const split of atom.transaction.splits) add('category', split.categoryId);
-      if (atom.kind === 'evidence_projection')
+      if (
+        atom.kind === 'evidence_projection' ||
+        atom.kind === 'evidence_credit' ||
+        atom.kind === 'evidence_amendment'
+      )
         for (const evidenceId of atom.evidenceIds) add('evidence', evidenceId);
       break;
     case 'wallet_materialization':
@@ -369,7 +544,9 @@ function sessionCart(session: SpendSession): Record<string, unknown> {
     accountId: session.accountId,
     items: session.items,
     ...(session.adjustments === undefined ? {} : { adjustments: session.adjustments }),
-    ...(session.warningThresholds === undefined ? {} : { warningThresholds: session.warningThresholds }),
+    ...(session.warningThresholds === undefined
+      ? {}
+      : { warningThresholds: session.warningThresholds }),
     expiresAt: session.expiresAt,
   };
 }
@@ -379,7 +556,11 @@ function manualDebits(action: ConsequentialActionIntent, evaluatedAt: string): A
     if (atom.kind !== 'manual_transaction' && atom.kind !== 'evidence_projection') continue;
     const transaction = atom.transaction;
     const purchaseAt = evaluatedAt;
-    const add = (categoryId: string, amount: { minorUnits: string; currency: string }, id: string) => {
+    const add = (
+      categoryId: string,
+      amount: { minorUnits: string; currency: string },
+      id: string,
+    ) => {
       if (!/^-([1-9][0-9]*)$/.test(amount.minorUnits))
         throw new Error('Manual transaction debit must be a negative exact amount');
       result.push({
@@ -392,7 +573,9 @@ function manualDebits(action: ConsequentialActionIntent, evaluatedAt: string): A
       });
     };
     if (transaction.splits.length) {
-      transaction.splits.forEach((split, index) => add(split.categoryId, split.amount, `${transaction.parentId}:split:${index}`));
+      transaction.splits.forEach((split, index) =>
+        add(split.categoryId, split.amount, `${transaction.parentId}:split:${index}`),
+      );
     } else if (transaction.categoryId) {
       add(transaction.categoryId, transaction.amount, transaction.parentId);
     } else {
@@ -407,22 +590,24 @@ function mergeManualDebits(
   evaluatedAt: string,
 ): ActionDecisionCart {
   const trustedDebits = decision.items.flatMap((item) =>
-    (item.categoryAllocations ?? [{ categoryId: item.categoryId, amount: item.amount }])
-      .map((allocation) => ({
+    (item.categoryAllocations ?? [{ categoryId: item.categoryId, amount: item.amount }]).map(
+      (allocation) => ({
         accountId: item.accountId ?? decision.accountId,
         categoryId: allocation.categoryId,
         amount: allocation.amount,
         date: item.purchaseAt.slice(0, 10),
-      })),
+      }),
+    ),
   );
   const usedDebits = new Set<number>();
   const unmatched = manualDebits(action, evaluatedAt).filter((debit) => {
-    const index = trustedDebits.findIndex((trusted, candidate) =>
-      !usedDebits.has(candidate) &&
-      trusted.accountId === debit.accountId &&
-      trusted.categoryId === debit.categoryId &&
-      trusted.date === debit.purchaseAt.slice(0, 10) &&
-      canonical(trusted.amount) === canonical(debit.amount),
+    const index = trustedDebits.findIndex(
+      (trusted, candidate) =>
+        !usedDebits.has(candidate) &&
+        trusted.accountId === debit.accountId &&
+        trusted.categoryId === debit.categoryId &&
+        trusted.date === debit.purchaseAt.slice(0, 10) &&
+        canonical(trusted.amount) === canonical(debit.amount),
     );
     if (index < 0) return true;
     usedDebits.add(index);
@@ -441,28 +626,45 @@ function savedDecision(
     const debits = manualDebits(action, now);
     if (debits.length === 0) return decision;
     const session = store.liquidity.getSpendSession({
-      ...actor, id: decision.origin.sessionId, now,
+      ...actor,
+      id: decision.origin.sessionId,
+      now,
     });
-    if (!session || session.version !== decision.origin.sessionVersion || Date.parse(session.expiresAt) <= Date.parse(now))
+    if (
+      !session ||
+      session.version !== decision.origin.sessionVersion ||
+      Date.parse(session.expiresAt) <= Date.parse(now)
+    )
       throw new Error('Saved session unavailable or changed');
-    return mergeManualDebits(action, {
-      accountId: session.accountId,
-      items: session.items,
-      ...(session.adjustments === undefined ? {} : { adjustments: session.adjustments }),
-      ...(session.warningThresholds === undefined ? {} : { warningThresholds: session.warningThresholds }),
-      expiresAt: session.expiresAt,
-    }, now);
+    return mergeManualDebits(
+      action,
+      {
+        accountId: session.accountId,
+        items: session.items,
+        ...(session.adjustments === undefined ? {} : { adjustments: session.adjustments }),
+        ...(session.warningThresholds === undefined
+          ? {}
+          : { warningThresholds: session.warningThresholds }),
+        expiresAt: session.expiresAt,
+      },
+      now,
+    );
   }
   if (decision) return mergeManualDebits(action, decision, now);
   return { accountId: null, items: manualDebits(action, now) };
 }
 function moneyNumber(value: { readonly minorUnits: string; readonly currency: string }): number {
-  if (!/^-?(0|[1-9][0-9]*)$/.test(value.minorUnits)) throw new Error('Invalid canonical minor units');
+  if (!/^-?(0|[1-9][0-9]*)$/.test(value.minorUnits))
+    throw new Error('Invalid canonical minor units');
   const number = Number(value.minorUnits);
-  if (!Number.isSafeInteger(number)) throw new Error('Amount exceeds the Actual safe integer range');
+  if (!Number.isSafeInteger(number))
+    throw new Error('Amount exceeds the Actual safe integer range');
   return number;
 }
-function requirePositiveMoney(value: { readonly minorUnits: string; readonly currency: string }): number {
+function requirePositiveMoney(value: {
+  readonly minorUnits: string;
+  readonly currency: string;
+}): number {
   if (!/^[1-9][0-9]*$/.test(value.minorUnits)) throw new Error('Amount must be positive');
   return moneyNumber(value);
 }
@@ -479,7 +681,8 @@ function nativeVerification(
   const response = consequentialActionVerificationSchema.parse(
     JSON.parse(native.verifyConsequentialAction(JSON.stringify(request))) as unknown,
   );
-  if (response.actionHash !== request.plan.actionHash) throw new Error('Native action hash mismatch');
+  if (response.actionHash !== request.plan.actionHash)
+    throw new Error('Native action hash mismatch');
   return response;
 }
 function requireCurrentSession(
@@ -495,12 +698,14 @@ function requireCurrentSession(
     now,
   });
   if (
-    !session || session.version !== preconditions.decision.origin.sessionVersion ||
+    !session ||
+    session.version !== preconditions.decision.origin.sessionVersion ||
     Date.parse(session.expiresAt) <= Date.parse(now) ||
     preconditions.sessionCart === null ||
     canonical(sessionCart(session)) !== canonical(preconditions.sessionCart) ||
     hash(sessionCart(session)) !== preconditions.sessionCartHash
-  ) throw new Error('Saved session changed');
+  )
+    throw new Error('Saved session changed');
 }
 function currentDecisionRequest(
   capture: ConsequentialActionCapture,
@@ -512,24 +717,35 @@ function currentDecisionRequest(
   recoveryEvaluatedAt?: string,
 ): DecisionCardRequest {
   if (!postconditions && preconditions.decision) {
-    const explicit = 'origin' in preconditions.decision
-      ? preconditions.sessionCart
-      : preconditions.decision;
+    const explicit =
+      'origin' in preconditions.decision ? preconditions.sessionCart : preconditions.decision;
     if (!explicit) throw new Error('Saved-session decision binding unavailable');
     const now = Date.parse(capture.now);
-    if (explicit.items.some((item) =>
-      Date.parse(item.purchaseAt) < now || Date.parse(item.requiredBy) < now))
+    if (
+      explicit.items.some(
+        (item) => Date.parse(item.purchaseAt) < now || Date.parse(item.requiredBy) < now,
+      )
+    )
       throw new Error('Explicit decision deadline expired');
   }
-  const decision = recoveryEvaluatedAt && preconditions.decision && 'origin' in preconditions.decision
-    ? preconditions.recoveryDecision
-    : savedDecision(action, preconditions.decision, store, actor, capture.now);
+  const decision =
+    recoveryEvaluatedAt && preconditions.decision && 'origin' in preconditions.decision
+      ? preconditions.recoveryDecision
+      : savedDecision(action, preconditions.decision, store, actor, capture.now);
   if (!decision) throw new Error('Saved-session recovery cart unavailable');
-  const excludedHistoricalTransactionIds = postconditions ? atoms(action).flatMap((atom) =>
-    atom.kind === 'manual_transaction' || atom.kind === 'evidence_projection'
-      ? [atom.transaction.parentId] : []) : [];
+  const excludedHistoricalTransactionIds = postconditions
+    ? atoms(action).flatMap((atom) =>
+        atom.kind === 'manual_transaction' ||
+        atom.kind === 'evidence_projection' ||
+        atom.kind === 'evidence_credit'
+          ? [atom.transaction.parentId]
+          : [],
+      )
+    : [];
   const request = capture.decisionCardRequest(
-    recoveryEvaluatedAt && !('origin' in decision) ? { ...decision, expiresAt: undefined } : decision,
+    recoveryEvaluatedAt && !('origin' in decision)
+      ? { ...decision, expiresAt: undefined }
+      : decision,
     excludedHistoricalTransactionIds,
   );
   // Readback replays the pinned decision clock; the verification clock remains current.
@@ -539,13 +755,17 @@ function currentDecisionRequest(
     horizon: preconditions.decisionHorizon,
   };
   const approvedItems = preconditions.decisionContext?.items;
-  if (!approvedItems) return decisionCardRequestSchema.parse({
-    ...request,
-    context,
-    validUntil: preconditions.decisionValidUntil,
-  });
+  if (!approvedItems)
+    return decisionCardRequestSchema.parse({
+      ...request,
+      context,
+      validUntil: preconditions.decisionValidUntil,
+    });
   const approvedById = new Map(approvedItems.map((item) => [item.id, item]));
-  if (request.items.length !== approvedById.size || request.items.some((item) => !approvedById.has(item.id)))
+  if (
+    request.items.length !== approvedById.size ||
+    request.items.some((item) => !approvedById.has(item.id))
+  )
     throw new Error('Captured decision cart changed');
   return decisionCardRequestSchema.parse({
     ...request,
@@ -571,15 +791,19 @@ function actualCaptureClockObservation(
     observation.version !== undefined ||
     observation.ledgerEffect !== undefined ||
     observation.evidence.length !== 1
-  ) return false;
+  )
+    return false;
   const reference = observation.evidence[0];
   if (!reference?.authorized || reference.redaction !== 'visible') return false;
   switch (observation.kind) {
     case 'account_coverage':
     case 'account_type':
     case 'account_balance':
-      return observation.state === 'complete' &&
-        reference.kind === 'account' && reference.evidenceId === observation.scope.id;
+      return (
+        observation.state === 'complete' &&
+        reference.kind === 'account' &&
+        reference.evidenceId === observation.scope.id
+      );
     case 'pending_activity':
     case 'uncleared_activity':
       return observation.state === 'included' && reference.kind === 'transaction';
@@ -587,25 +811,61 @@ function actualCaptureClockObservation(
       return false;
   }
 }
-function resolvedEvidence(snapshot: FinancialSnapshot, capture: ConsequentialActionCapture): ConsequentialActionEvidence[] {
+function resolvedEvidence(
+  snapshot: FinancialSnapshot,
+  capture: ConsequentialActionCapture,
+  action: ConsequentialActionIntent,
+): ConsequentialActionEvidence[] {
   const output = new Map<string, ConsequentialActionEvidence>();
+  const ordinary = new Map<string, Map<string, ConsequentialActionEvidence>>();
   const add = (evidence: ConsequentialActionEvidence): void => {
-    const prior = output.get(evidence.evidenceId);
-    if (prior && prior.subjectId !== evidence.subjectId)
-      throw new Error('Source evidence is bound to multiple subjects');
-    if (!prior) output.set(evidence.evidenceId, evidence);
+    const key = canonical([evidence.evidenceId, evidence.subjectId]);
+    const prior = output.get(key);
+    if (prior && canonical(prior) !== canonical(evidence))
+      throw new Error('Source evidence has conflicting proof for one subject');
+    if (!prior) output.set(key, evidence);
   };
+  for (const atom of atoms(action))
+    if (atom.kind === 'wallet_materialization' && atom.opening) {
+      bindWalletOpening(atom, snapshot.observations, (id) =>
+        capture.projector.allowed('evidence', id, 'source'),
+      );
+      for (const observation of snapshot.observations)
+        if (
+          observation.kind === 'wallet_statement_anchor' &&
+          observation.walletBalanceAnchor?.boundary === 'before_day_activity' &&
+          observation.walletBalanceAnchor.walletId === atom.walletId &&
+          observation.walletBalanceAnchor.asOfDate === atom.opening.date &&
+          observation.walletBalanceAnchor.proofSetHash === atom.opening.proofSetHash &&
+          observation.walletBalanceAnchor.activityManifestHash === atom.opening.activityManifestHash
+        )
+          for (const proof of walletAnchorEvidence(observation, (id) =>
+            capture.projector.allowed('evidence', id, 'source'),
+          ))
+            add(proof);
+    }
   for (const observation of snapshot.observations) {
-    if (observation.kind === 'economic_event_resolution' && observation.scope.kind === 'transaction') {
+    if (observation.kind === 'wallet_statement_anchor') continue;
+    if (
+      observation.kind === 'economic_event_resolution' &&
+      observation.scope.kind === 'transaction'
+    ) {
       if (
-        observation.state !== 'resolved' || !observation.contentHash?.trim() ||
-        !observation.version?.trim() || !observation.observedAt || !observation.ledgerEffect
-      ) continue;
+        observation.state !== 'resolved' ||
+        !observation.contentHash?.trim() ||
+        !observation.version?.trim() ||
+        !observation.observedAt ||
+        !observation.ledgerEffect
+      )
+        continue;
       for (const reference of observation.evidence) {
         if (
-          reference.kind !== 'economic_event_resolution' || !reference.authorized || reference.redaction !== 'visible' ||
+          reference.kind !== 'economic_event_resolution' ||
+          !reference.authorized ||
+          reference.redaction !== 'visible' ||
           !capture.projector.allowed('evidence', reference.evidenceId, 'source')
-        ) continue;
+        )
+          continue;
         add({
           evidenceId: reference.evidenceId,
           subjectId: observation.scope.id,
@@ -619,25 +879,32 @@ function resolvedEvidence(snapshot: FinancialSnapshot, capture: ConsequentialAct
     if (
       (observation.scope.kind !== 'account' && observation.scope.kind !== 'category') ||
       !capture.projector.allowed(observation.scope.kind, observation.scope.id, 'history')
-    ) continue;
+    )
+      continue;
     for (const reference of observation.evidence) {
       if (!reference.authorized || reference.redaction !== 'visible') continue;
-      const readable = reference.kind === 'bank_sync' ||
-        (reference.kind === 'account' && observation.scope.kind === 'account' &&
+      const readable =
+        reference.kind === 'bank_sync' ||
+        (reference.kind === 'account' &&
+          observation.scope.kind === 'account' &&
           reference.evidenceId === observation.scope.id)
-        ? capture.projector.allowed(observation.scope.kind, observation.scope.id, 'source')
-        : capture.projector.allowed(
-            'evidence',
-            reference.evidenceId,
-            reference.kind === 'transaction' ? 'ledger-effect'
-              : reference.kind === 'receipt' ? 'raw-document'
-                : reference.kind === 'normalized_receipt' ? 'normalized-evidence' : 'source',
-          );
+          ? capture.projector.allowed(observation.scope.kind, observation.scope.id, 'source')
+          : capture.projector.allowed(
+              'evidence',
+              reference.evidenceId,
+              reference.kind === 'transaction'
+                ? 'ledger-effect'
+                : reference.kind === 'receipt'
+                  ? 'raw-document'
+                  : reference.kind === 'normalized_receipt'
+                    ? 'normalized-evidence'
+                    : 'source',
+            );
       if (!readable) continue;
       const observedAt = actualCaptureClockObservation(snapshot, observation)
         ? null
         : observation.observedAt;
-      add({
+      const proof: ConsequentialActionEvidence = {
         evidenceId: reference.evidenceId,
         subjectId: observation.scope.id,
         state: 'resolved',
@@ -656,8 +923,30 @@ function resolvedEvidence(snapshot: FinancialSnapshot, capture: ConsequentialAct
           },
         }),
         ...(observation.version === undefined ? {} : { version: observation.version }),
-      });
+      };
+      const key = canonical([proof.evidenceId, proof.subjectId]);
+      const proofs = ordinary.get(key) ?? new Map<string, ConsequentialActionEvidence>();
+      proofs.set(canonical(proof), proof);
+      ordinary.set(key, proofs);
     }
+  }
+  for (const [key, entries] of ordinary) {
+    if (output.has(key))
+      throw new Error('Source evidence has conflicting proof domains for one subject');
+    const proofs = [...entries.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, proof]) => proof);
+    const first = proofs[0]!;
+    add(
+      proofs.length === 1
+        ? first
+        : {
+            evidenceId: first.evidenceId,
+            subjectId: first.subjectId,
+            state: 'resolved',
+            contentHash: hash({ kind: 'ordinary_source_proof_set', version: 1, proofs }),
+          },
+    );
   }
   return [...output.values()];
 }
@@ -665,22 +954,33 @@ function economicEventForEvidence(
   snapshot: FinancialSnapshot,
   capture: ConsequentialActionCapture,
   evidenceId: string,
+  subjectId?: string,
 ): { readonly subjectId: string; readonly effect: EconomicEventLedgerEffect } {
-  const observations = snapshot.observations.filter((observation) =>
-    observation.kind === 'economic_event_resolution' &&
-    observation.scope.kind === 'transaction' &&
-    observation.evidence.some((reference) => reference.evidenceId === evidenceId),
+  const observations = snapshot.observations.filter(
+    (observation) =>
+      observation.kind === 'economic_event_resolution' &&
+      observation.scope.kind === 'transaction' &&
+      (subjectId === undefined || observation.scope.id === subjectId) &&
+      observation.evidence.some((reference) => reference.evidenceId === evidenceId),
   );
   const observation = observations[0];
   const reference = observation?.evidence.find((entry) => entry.evidenceId === evidenceId);
   if (
-    observations.length !== 1 || !observation || observation.scope.kind !== 'transaction' ||
-    observation.state !== 'resolved' || !observation.observedAt ||
-    !observation.contentHash?.trim() || !observation.version?.trim() || !observation.ledgerEffect ||
-    !reference || reference.kind !== 'economic_event_resolution' ||
-    !reference.authorized || reference.redaction !== 'visible' ||
+    observations.length !== 1 ||
+    !observation ||
+    observation.scope.kind !== 'transaction' ||
+    observation.state !== 'resolved' ||
+    !observation.observedAt ||
+    !observation.contentHash?.trim() ||
+    !observation.version?.trim() ||
+    !observation.ledgerEffect ||
+    !reference ||
+    reference.kind !== 'economic_event_resolution' ||
+    !reference.authorized ||
+    reference.redaction !== 'visible' ||
     !capture.projector.allowed('evidence', evidenceId, 'source')
-  ) throw new Error('Current resolved economic-event evidence unavailable');
+  )
+    throw new Error('Current resolved economic-event evidence unavailable');
   return { subjectId: observation.scope.id, effect: observation.ledgerEffect };
 }
 function sourceBoundAction(
@@ -689,11 +989,30 @@ function sourceBoundAction(
   capture: ConsequentialActionCapture,
 ): ConsequentialActionIntent {
   const bindAtom = (atom: ActionAtom): ActionAtom => {
-    if (atom.kind !== 'evidence_projection') return atom;
-    const events = atom.evidenceIds.map((id) => economicEventForEvidence(snapshot, capture, id));
+    if (atom.kind === 'wallet_materialization')
+      return bindWalletOpening(atom, snapshot.observations, (id) =>
+        capture.projector.allowed('evidence', id, 'source'),
+      );
+    if (
+      atom.kind !== 'evidence_projection' &&
+      atom.kind !== 'evidence_credit' &&
+      atom.kind !== 'evidence_amendment'
+    )
+      return atom;
+    const events = atom.evidenceIds.map((id) =>
+      economicEventForEvidence(snapshot, capture, id, atom.resolutionSubjectId),
+    );
     const source = events[0];
     if (!source || events.some((event) => canonical(event) !== canonical(source)))
       throw new Error('Evidence projection must bind one exact source economic event');
+    if (
+      atom.kind === 'evidence_amendment' &&
+      (source.subjectId !== atom.expected.parentId ||
+        canonical(
+          snapshot.legacySnapshot.transactions.find((row) => row.id === atom.expected.parentId),
+        ) !== canonical(atom.expectedSource))
+    )
+      throw new Error('Amendment source settlement changed');
     const { effect } = source;
     const transaction = atom.transaction;
     if (
@@ -704,7 +1023,8 @@ function sourceBoundAction(
       transaction.payeeName !== effect.payeeName ||
       transaction.notes !== effect.notes ||
       canonical(transaction.splits) !== canonical(effect.splits)
-    ) throw new Error('Proposed transaction differs from the source economic ledger effect');
+    )
+      throw new Error('Proposed transaction differs from the source economic ledger effect');
     return {
       ...atom,
       transaction: {
@@ -723,12 +1043,26 @@ function sourceBoundAction(
     ? { ...action, actions: action.actions.map(bindAtom) }
     : bindAtom(action);
 }
-function requireResolvedEvidence(action: ConsequentialActionIntent, evidence: readonly ConsequentialActionEvidence[]): void {
-  const available = new Set(evidence.map((entry) => entry.evidenceId));
+function requireResolvedEvidence(
+  action: ConsequentialActionIntent,
+  evidence: readonly ConsequentialActionEvidence[],
+): void {
   for (const atom of atoms(action))
-    if (atom.kind === 'evidence_projection')
+    if (
+      atom.kind === 'evidence_projection' ||
+      atom.kind === 'evidence_credit' ||
+      atom.kind === 'evidence_amendment'
+    )
       for (const evidenceId of atom.evidenceIds)
-        if (!available.has(evidenceId)) throw new Error('Current resolved economic-event evidence unavailable');
+        if (
+          !evidence.some(
+            (entry) =>
+              entry.evidenceId === evidenceId &&
+              (atom.resolutionSubjectId === undefined ||
+                entry.subjectId === atom.resolutionSubjectId),
+          )
+        )
+          throw new Error('Current resolved economic-event evidence unavailable');
 }
 
 function sourceLedger(
@@ -737,7 +1071,9 @@ function sourceLedger(
 ): Omit<ConsequentialActionLedger, 'wallets' | 'transfers'> {
   if (!['complete', 'empty'].includes(snapshot.coverage.transactions))
     throw new Error('Complete transaction coverage required');
-  const accountFacts = new Map((snapshot.liquidity?.accounts ?? []).map((fact) => [fact.accountId, fact]));
+  const accountFacts = new Map(
+    (snapshot.liquidity?.accounts ?? []).map((fact) => [fact.accountId, fact]),
+  );
   const accounts = snapshot.legacySnapshot.accounts.map((account) => {
     const fact = accountFacts.get(account.id);
     if (!fact || fact.balanceEvidence.state !== 'known')
@@ -748,7 +1084,8 @@ function sourceLedger(
       !currency ||
       (fact.currencyEvidence.state !== 'known' &&
         (fact.currency !== currency || fact.recordedBalance.currency !== currency))
-    ) throw new Error('Current account currency and balance evidence required');
+    )
+      throw new Error('Current account currency and balance evidence required');
     return {
       accountId: account.id,
       name: account.name,
@@ -794,7 +1131,9 @@ function recordedWallets(
   proposals: readonly ActionProposal[],
   snapshot: FinancialSnapshot,
 ): RecordedWallets {
-  const accounts = new Map(snapshot.legacySnapshot.accounts.map((account) => [account.id, account]));
+  const accounts = new Map(
+    snapshot.legacySnapshot.accounts.map((account) => [account.id, account]),
+  );
   const wallets = new Map<string, { walletId: string; accountId: string }>();
   const currencies = new Map<string, string>();
   for (const proposal of proposals) {
@@ -802,21 +1141,14 @@ function recordedWallets(
     const actionAtoms = atoms(proposal.payload.plan.action);
     for (const effect of proposal.state.effects) {
       const action = actionAtoms[effect.atomIndex];
-      if (!action || action.kind !== 'wallet_materialization' || effect.actionKind !== action.kind) continue;
-      const result = record(record(effect.result)?.result);
-      if (
-        result?.success !== true || result.verified !== true ||
-        result.walletId !== action.walletId || typeof result.accountId !== 'string'
-      ) continue;
-      const actual = accounts.get(result.accountId);
-      const fact = snapshot.liquidity?.accounts.find((value) => value.accountId === result.accountId);
-      if (
-        !actual || actual.name !== action.accountName || actual.offBudget || actual.isClosed ||
-        !fact || fact.currency !== action.currency || fact.recordedBalance.minorUnits !== '0' ||
-        fact.recordedBalance.currency !== action.currency
-      ) continue;
-      wallets.set(action.walletId, { walletId: action.walletId, accountId: result.accountId });
-      currencies.set(result.accountId, action.currency);
+      if (!action || action.kind !== 'wallet_materialization' || effect.actionKind !== action.kind)
+        continue;
+      const accountId = verifiedWalletAccount(action, record(effect.result)?.result);
+      if (!accountId || !accounts.has(accountId)) continue;
+      const fact = snapshot.liquidity?.accounts.find((value) => value.accountId === accountId);
+      wallets.set(action.walletId, { walletId: action.walletId, accountId });
+      if (fact?.currency === action.currency && fact.recordedBalance.currency === action.currency)
+        currencies.set(accountId, action.currency);
     }
   }
   return { wallets: [...wallets.values()], currencies };
@@ -829,7 +1161,9 @@ function postconditionCurrencyFallbacks(
   const currencies = new Map<string, string>();
   const invalidated = new Set(
     authorization.plan.source.invalidatedSupplementalFacts
-      .filter((facts) => facts.fields.includes('currency') && facts.paths.includes('currencyEvidence'))
+      .filter(
+        (facts) => facts.fields.includes('currency') && facts.paths.includes('currencyEvidence'),
+      )
       .map((facts) => facts.accountId),
   );
   for (const observation of authorization.preconditions.supplemental?.observations ?? [])
@@ -840,22 +1174,22 @@ function postconditionCurrencyFallbacks(
     if (
       proposal.operation !== 'consequential_action' ||
       proposal.payload.plan.idempotencyKey !== authorization.plan.idempotencyKey
-    ) continue;
+    )
+      continue;
     const actionAtoms = atoms(proposal.payload.plan.action);
     for (const effect of proposal.state.effects) {
       const action = actionAtoms[effect.atomIndex];
-      if (!action || action.kind !== 'wallet_materialization' || effect.actionKind !== action.kind) continue;
-      const result = record(record(effect.result)?.result);
+      if (!action || action.kind !== 'wallet_materialization' || effect.actionKind !== action.kind)
+        continue;
+      const accountId = verifiedWalletAccount(action, record(effect.result)?.result);
+      if (!accountId) continue;
       if (
-        result?.success !== true || result.verified !== true || result.walletId !== action.walletId ||
-        typeof result.accountId !== 'string'
-      ) continue;
-      if (
-        recorded.wallets.some((wallet) =>
-          wallet.walletId === action.walletId && wallet.accountId === result.accountId,
+        recorded.wallets.some(
+          (wallet) => wallet.walletId === action.walletId && wallet.accountId === accountId,
         ) &&
-        recorded.currencies.get(result.accountId) === action.currency
-      ) currencies.set(result.accountId, action.currency);
+        recorded.currencies.get(accountId) === action.currency
+      )
+        currencies.set(accountId, action.currency);
     }
   }
   return currencies;
@@ -874,36 +1208,53 @@ function recordedTransfers(
     for (const [atomIndex, action] of atoms(proposal.payload.plan.action).entries()) {
       if (action.kind !== 'transfer') continue;
       const marker = `balanceframe:transfer:${action.transferId}:${action.correlationId}`;
-      const sourceCandidates = rows.filter((row) =>
-        row.accountId === action.sourceAccountId && row.transferAccountId === action.destinationAccountId &&
-        row.date === action.date && row.amount.minorUnits === `-${action.amount.minorUnits}` &&
-        row.amount.currency === action.amount.currency && row.notes === marker,
+      const sourceCandidates = rows.filter(
+        (row) =>
+          row.accountId === action.sourceAccountId &&
+          row.transferAccountId === action.destinationAccountId &&
+          row.date === action.date &&
+          row.amount.minorUnits === `-${action.amount.minorUnits}` &&
+          row.amount.currency === action.amount.currency &&
+          row.notes === marker,
       );
-      const destinationCandidates = rows.filter((row) =>
-        row.accountId === action.destinationAccountId && row.transferAccountId === action.sourceAccountId &&
-        row.date === action.date && row.amount.minorUnits === action.amount.minorUnits &&
-        row.amount.currency === action.amount.currency && row.notes === marker,
+      const destinationCandidates = rows.filter(
+        (row) =>
+          row.accountId === action.destinationAccountId &&
+          row.transferAccountId === action.sourceAccountId &&
+          row.date === action.date &&
+          row.amount.minorUnits === action.amount.minorUnits &&
+          row.amount.currency === action.amount.currency &&
+          row.notes === marker,
       );
       if (sourceCandidates.length !== 1 || destinationCandidates.length !== 1) continue;
       const source = sourceCandidates[0]!;
       const destination = destinationCandidates[0]!;
       const sourceRecord = rawRows.get(source.id);
       const destinationRecord = rawRows.get(destination.id);
-      const pairId = [source.id, destination.id].sort((left, right) => left.localeCompare(right)).join(':');
+      const pairId = [source.id, destination.id]
+        .sort((left, right) => left.localeCompare(right))
+        .join(':');
       if (
-        !sourceRecord || !destinationRecord ||
-        sourceRecord.provenance !== 'manual_ledger' || destinationRecord.provenance !== 'manual_ledger' ||
-        sourceRecord.importedId !== null || destinationRecord.importedId !== null ||
-        sourceRecord.pairId !== pairId || destinationRecord.pairId !== pairId ||
-        sourceRecord.accountId !== source.accountId || destinationRecord.accountId !== destination.accountId ||
-        sourceRecord.occurredAt !== action.date || destinationRecord.occurredAt !== action.date ||
+        !sourceRecord ||
+        !destinationRecord ||
+        sourceRecord.provenance !== 'manual_ledger' ||
+        destinationRecord.provenance !== 'manual_ledger' ||
+        sourceRecord.importedId !== null ||
+        destinationRecord.importedId !== null ||
+        sourceRecord.pairId !== pairId ||
+        destinationRecord.pairId !== pairId ||
+        sourceRecord.accountId !== source.accountId ||
+        destinationRecord.accountId !== destination.accountId ||
+        sourceRecord.occurredAt !== action.date ||
+        destinationRecord.occurredAt !== action.date ||
         sourceRecord.amount.minorUnits !== source.amount.minorUnits ||
         destinationRecord.amount.minorUnits !== destination.amount.minorUnits ||
         sourceRecord.amount.currency !== action.amount.currency ||
         destinationRecord.amount.currency !== action.amount.currency
-      ) continue;
-      const effect = proposal.state.effects.find((entry) =>
-        entry.atomIndex === atomIndex && entry.actionKind === 'transfer',
+      )
+        continue;
+      const effect = proposal.state.effects.find(
+        (entry) => entry.atomIndex === atomIndex && entry.actionKind === 'transfer',
       );
       const observed = record(record(effect?.result)?.result);
       if (
@@ -911,7 +1262,8 @@ function recordedTransfers(
         (observed.transferId !== action.transferId ||
           observed.sourceTransactionId !== source.id ||
           observed.destinationTransactionId !== destination.id)
-      ) continue;
+      )
+        continue;
       transfers.set(action.transferId, {
         transferId: action.transferId,
         correlationId: action.correlationId,
@@ -927,7 +1279,10 @@ function recordedTransfers(
   }
   return [...transfers.values()];
 }
-function dispatchPrecondition(plan: ConsequentialActionPlan, atomIndex: number): ActionDispatchPrecondition {
+function dispatchPrecondition(
+  plan: ConsequentialActionPlan,
+  atomIndex: number,
+): ActionDispatchPrecondition {
   const precondition = plan.dispatchPreconditions.find((item) => item.atomIndex === atomIndex);
   if (!precondition) throw new Error('Native action dispatch precondition unavailable');
   return precondition;
@@ -935,15 +1290,27 @@ function dispatchPrecondition(plan: ConsequentialActionPlan, atomIndex: number):
 function assignmentEffects(
   atom: Extract<ActionAtom, { kind: 'reallocation' }>,
   dispatch: ActionDispatchPrecondition,
-): Array<{ categoryId: string; month: string; amount: number; expectedAmount: number; currency: string }> {
-  const endpoints = new Set(atom.assignments.flatMap((assignment) => [
-    `${assignment.sourceCategoryId}\0${assignment.sourceAsOfMonth}`,
-    `${assignment.destinationCategoryId}\0${assignment.destinationAsOfMonth}`,
-  ]));
+): Array<{
+  categoryId: string;
+  month: string;
+  amount: number;
+  expectedAmount: number;
+  currency: string;
+}> {
+  const endpoints = new Set(
+    atom.assignments.flatMap((assignment) => [
+      `${assignment.sourceCategoryId}\0${assignment.sourceAsOfMonth}`,
+      `${assignment.destinationCategoryId}\0${assignment.destinationAsOfMonth}`,
+    ]),
+  );
   if (
-    dispatch.accountBalances.length !== 0 || dispatch.assignments.length !== endpoints.size ||
-    dispatch.assignments.some((assignment) => !endpoints.has(`${assignment.categoryId}\0${assignment.asOfMonth}`))
-  ) throw new Error('Native assignment precondition endpoints do not match the action');
+    dispatch.accountBalances.length !== 0 ||
+    dispatch.assignments.length !== endpoints.size ||
+    dispatch.assignments.some(
+      (assignment) => !endpoints.has(`${assignment.categoryId}\0${assignment.asOfMonth}`),
+    )
+  )
+    throw new Error('Native assignment precondition endpoints do not match the action');
   const effects = dispatch.assignments.map((current) => {
     if (current.postAmount.currency !== current.amount.currency)
       throw new Error('Native assignment poststate currency changed');
@@ -963,6 +1330,31 @@ function assignmentEffects(
     .map(({ effect }) => effect);
 }
 
+function adapterTransactionInput(transaction: ManualTransactionIntent): ManualTransactionInput {
+  return {
+    parentId: transaction.parentId,
+    correlationId: transaction.correlationId,
+    accountId: transaction.accountId,
+    amount: moneyNumber(transaction.amount),
+    date: transaction.date,
+    ...(transaction.categoryId === null
+      ? { categoryId: null }
+      : { categoryId: transaction.categoryId }),
+    ...(transaction.payeeName === null ? {} : { payeeName: transaction.payeeName }),
+    ...(transaction.notes === null ? {} : { notes: transaction.notes }),
+    ...(transaction.splits.length
+      ? {
+          splits: transaction.splits.map((split) => ({
+            accountId: transaction.accountId,
+            date: transaction.date,
+            categoryId: split.categoryId,
+            amount: moneyNumber(split.amount),
+          })),
+        }
+      : {}),
+  };
+}
+
 export class ConsequentialActionService {
   private readonly clock: () => Date;
   constructor(private readonly options: ConsequentialActionServiceOptions) {
@@ -977,118 +1369,173 @@ export class ConsequentialActionService {
     this.requireAction(currentActor, input.action, 'propose');
     const containsReallocation = atoms(input.action).some((atom) => atom.kind === 'reallocation');
     if (containsReallocation !== (input.decision !== undefined))
-      throw new Error(containsReallocation
-        ? 'Reallocation decision intent required'
-        : 'Decision intent is only accepted for a reallocation');
-    return this.options.liquidity.withConsequentialActionCapture(currentActor, async (capture) => {
-      const action = sourceBoundAction(input.action, capture.snapshot, capture);
-      this.requireAction(currentActor, action, 'propose');
-      const decision = input.decision ?? null;
-      const sessionCartBefore = decision && 'origin' in decision
-        ? this.sessionCart(currentActor, decision, capture.now)
-        : null;
-      const debits = manualDebits(action, capture.now);
-      const resolvedDecision = containsReallocation
-        ? savedDecision(action, decision, this.options.store, currentActor, capture.now)
-        : { accountId: null, items: debits };
-      const decisionCardRequest = capture.decisionCardRequest(resolvedDecision);
-      const actionEvidence = resolvedEvidence(capture.snapshot, capture);
-      requireResolvedEvidence(action, actionEvidence);
-      this.requirePrivateSource(currentActor, capture, action, actionEvidence);
-      const ledger = await this.currentLedger(currentActor, capture.snapshot, capture.transferSettlementRecords);
-      const sessionCart = decision && 'origin' in decision
-        ? this.sessionCart(currentActor, decision, capture.now)
-        : null;
-      if (canonical(sessionCart) !== canonical(sessionCartBefore))
-        throw new Error('Saved session changed during consequential capture');
-      const recoveryDecision = sessionCart
-        ? pinnedDecisionSchema.parse({
-          ...sessionCart,
-          items: decisionCardRequest.items.map(({ routeSelection, ...item }) => ({
-            ...item,
-            accountId: routeSelection.explicitAccountId,
-          })),
-        })
-        : null;
-      const policyVersion = financialPolicyVersion(capture);
-      const policyHash = capture.policy?.policy.policyHash;
-      if (!policyHash?.trim()) throw new Error('Current financial policy hash unavailable');
-      const request: PlanConsequentialActionRequest = planConsequentialActionRequestSchema.parse({
-        decisionCardRequest,
-        intent: action,
-        currentLedger: ledger,
-        resolvedEvidence: actionEvidence,
-        supplementalObservations: supplementalObservationProjections(capture),
-        financialPolicyVersion: policyVersion,
-        evaluatedAt: capture.now,
-        idempotencyKey: randomUUID(),
-      });
-      const plan = consequentialActionPlanSchema.parse(
-        JSON.parse(this.options.native.planConsequentialAction(JSON.stringify(request))) as unknown,
+      throw new Error(
+        containsReallocation
+          ? 'Reallocation decision intent required'
+          : 'Decision intent is only accepted for a reallocation',
       );
-      if (canonical(plan.action) !== canonical(action)) throw new Error('Native action intent changed');
-      if (!SHA256.test(plan.actionHash) || Date.parse(plan.expiresAt) <= Date.parse(capture.now))
-        throw new Error('Native action plan is invalid or expired');
-      this.requireAction(currentActor, plan.action, 'propose');
-      const supplemental = capture.supplemental === null ? null : jsonClone(capture.supplemental);
-      const preconditions: ActionPreconditions = {
-        version: 1,
-        sourceReference: randomUUID(),
-        nativeActionHash: plan.actionHash,
-        nativeSource: plan.source,
-        decisionCardPolicyHash: policyHash,
-        financialApprovalPolicy: { version: policyVersion, policyHash },
-        supplemental,
-        supplementalHash: hash(supplemental),
-        decision,
-        sessionCart,
-        recoveryDecision,
-        sessionCartHash: sessionCart === null ? null : hash(sessionCart),
-        decisionHorizon: decisionCardRequest.context.horizon,
-        decisionValidUntil: decisionCardRequest.validUntil,
-        decisionContext: capturedDecisionContext(decisionCardRequest),
-      };
-      const stored = storedPreconditionsSchema.parse(preconditions);
-      const created = await this.options.store.createProposal({
-        operation: 'consequential_action',
-        budgetId: currentActor.budgetId,
-        spaceId: currentActor.spaceId ?? this.requireSpace(currentActor),
-        payload: { kind: 'consequential_action', plan },
-        policyVersion: GENERIC_MUTATION_POLICY_VERSION,
-        preconditions: canonicalProposalJson(stored),
-        expiresAt: plan.expiresAt,
-        actorId: currentActor.actorId,
-        auth: this.requireAuth(currentActor),
-        provenance: 'manual',
-        correlationId: plan.idempotencyKey,
-      });
-      if (created.operation !== 'consequential_action') throw new Error('Consequential action proposal unavailable');
-      try {
-        const reads = this.options.store.getProposalApprovalReads({
-          proposalIds: await this.disclosureCollectionIds(currentActor),
-          spaceId: this.requireSpace(currentActor),
+    return this.options.liquidity.withConsequentialActionCapture(
+      currentActor,
+      async (capture, connected) => {
+        const action = sourceBoundAction(input.action, capture.snapshot, capture);
+        this.requireAction(currentActor, action, 'propose');
+        await this.requireUnmaterializedWallets(currentActor, action);
+        const decision = input.decision ?? null;
+        const sessionCartBefore =
+          decision && 'origin' in decision
+            ? this.sessionCart(currentActor, decision, capture.now)
+            : null;
+        const debits = manualDebits(action, capture.now);
+        const resolvedDecision = containsReallocation
+          ? savedDecision(action, decision, this.options.store, currentActor, capture.now)
+          : { accountId: null, items: debits };
+        const decisionCardRequest = capture.decisionCardRequest(resolvedDecision);
+        const actionEvidence = resolvedEvidence(capture.snapshot, capture, action);
+        requireResolvedEvidence(action, actionEvidence);
+        this.requirePrivateSource(currentActor, capture, action, actionEvidence);
+        const ledger = await this.currentLedger(
+          currentActor,
+          capture.snapshot,
+          capture.transferSettlementRecords,
+        );
+        const sessionCart =
+          decision && 'origin' in decision
+            ? this.sessionCart(currentActor, decision, capture.now)
+            : null;
+        if (canonical(sessionCart) !== canonical(sessionCartBefore))
+          throw new Error('Saved session changed during consequential capture');
+        const recoveryDecision = sessionCart
+          ? pinnedDecisionSchema.parse({
+              ...sessionCart,
+              items: decisionCardRequest.items.map(({ routeSelection, ...item }) => ({
+                ...item,
+                accountId: routeSelection.explicitAccountId,
+              })),
+            })
+          : null;
+        const policyVersion = financialPolicyVersion(capture);
+        const policyHash = capture.policy?.policy.policyHash;
+        if (!policyHash?.trim()) throw new Error('Current financial policy hash unavailable');
+        const request: PlanConsequentialActionRequest = planConsequentialActionRequestSchema.parse({
+          decisionCardRequest,
+          intent: action,
+          currentLedger: ledger,
+          resolvedEvidence: actionEvidence,
+          supplementalObservations: supplementalObservationProjections(capture),
+          financialPolicyVersion: policyVersion,
+          evaluatedAt: capture.now,
+          idempotencyKey: randomUUID(),
+        });
+        const plan = consequentialActionPlanSchema.parse(
+          JSON.parse(
+            this.options.native.planConsequentialAction(JSON.stringify(request)),
+          ) as unknown,
+        );
+        if (canonical(plan.action) !== canonical(action))
+          throw new Error('Native action intent changed');
+        if (!SHA256.test(plan.actionHash) || Date.parse(plan.expiresAt) <= Date.parse(capture.now))
+          throw new Error('Native action plan is invalid or expired');
+        this.requireAction(currentActor, plan.action, 'propose');
+        const supplemental = capture.supplemental === null ? null : jsonClone(capture.supplemental);
+        const amendmentSources: EvidenceTransactionSource[] = [];
+        for (const atom of atoms(action))
+          if (atom.kind === 'evidence_amendment') {
+            const reader = connected.connector as unknown as Pick<
+              BudgetLedger,
+              'captureEvidenceTransaction'
+            >;
+            const source = await reader.captureEvidenceTransaction({
+              budgetId: currentActor.budgetId,
+              accountId: atom.transaction.accountId,
+              transactionId: atom.transaction.parentId,
+            });
+            if (canonical(source.transaction) !== canonical(atom.expectedSource))
+              throw new Error('Amendment source changed during capture');
+            amendmentSources.push(source);
+          }
+        this.requirePrivateSource(
+          this.currentActor(actor, this.clock().toISOString()),
+          capture,
+          action,
+          actionEvidence,
+        );
+        this.requireAction(this.currentActor(actor, this.clock().toISOString()), action, 'propose');
+        const allocationReviews = actionAllocationReviews(action, capture.snapshot);
+        const preconditions: ActionPreconditions = {
+          ...(allocationReviews.length ? { allocationReviews } : {}),
+          ...(amendmentSources.length ? { amendmentSources } : {}),
+          version: 1,
+          sourceReference: randomUUID(),
+          nativeActionHash: plan.actionHash,
+          nativeSource: plan.source,
+          decisionCardPolicyHash: policyHash,
+          financialApprovalPolicy: { version: policyVersion, policyHash },
+          supplemental,
+          supplementalHash: hash(supplemental),
+          decision,
+          sessionCart,
+          recoveryDecision,
+          sessionCartHash: sessionCart === null ? null : hash(sessionCart),
+          decisionHorizon: decisionCardRequest.context.horizon,
+          decisionValidUntil: decisionCardRequest.validUntil,
+          decisionContext: capturedDecisionContext(decisionCardRequest),
+        };
+        const stored = storedPreconditionsSchema.parse(preconditions);
+        const created = await this.options.store.createProposal({
+          operation: 'consequential_action',
+          budgetId: currentActor.budgetId,
+          spaceId: currentActor.spaceId ?? this.requireSpace(currentActor),
+          payload: { kind: 'consequential_action', plan },
+          policyVersion: GENERIC_MUTATION_POLICY_VERSION,
+          preconditions: canonicalProposalJson(stored),
+          expiresAt: plan.expiresAt,
           actorId: currentActor.actorId,
           auth: this.requireAuth(currentActor),
-          now: capture.now,
-          privateProjection: 'detail',
+          provenance: 'manual',
+          correlationId: plan.idempotencyKey,
         });
-        const read = reads.find((entry) => entry.proposal.id === created.id);
-        if (!read || read.proposal.operation !== 'consequential_action' || !read.summary.privateEnvelopeVisible)
-          throw new Error('Current financial detail publication authority unavailable');
-        return this.projectProposal(read.proposal, capture, read.summary);
-      } catch (cause) {
-        throw Object.assign(new ApplicationError({
-          code: 'PROPOSAL_CREATED_DETAILS_WITHHELD',
-          message: 'Proposal persisted; current financial details disclosure is unavailable',
-          retryable: false,
-        }), { cause });
-      }
-    });
+        if (created.operation !== 'consequential_action')
+          throw new Error('Consequential action proposal unavailable');
+        try {
+          const reads = this.options.store.getProposalApprovalReads({
+            proposalIds: await this.disclosureCollectionIds(currentActor),
+            spaceId: this.requireSpace(currentActor),
+            actorId: currentActor.actorId,
+            auth: this.requireAuth(currentActor),
+            now: capture.now,
+            privateProjection: 'detail',
+          });
+          const read = reads.find((entry) => entry.proposal.id === created.id);
+          if (
+            !read ||
+            read.proposal.operation !== 'consequential_action' ||
+            !read.summary.privateEnvelopeVisible
+          )
+            throw new Error('Current financial detail publication authority unavailable');
+          return this.projectProposal(read.proposal, capture, read.summary);
+        } catch (cause) {
+          throw Object.assign(
+            new ApplicationError({
+              code: 'PROPOSAL_CREATED_DETAILS_WITHHELD',
+              message: 'Proposal persisted; current financial details disclosure is unavailable',
+              retryable: false,
+            }),
+            { cause },
+          );
+        }
+      },
+    );
   }
-  async getProposal(actor: LiquidityActor, proposalId: string): Promise<ConsequentialActionProposal | null> {
+  async getProposal(
+    actor: LiquidityActor,
+    proposalId: string,
+  ): Promise<ConsequentialActionProposal | null> {
     return (await this.getProposals(actor, [proposalId]))[0] ?? null;
   }
-  async getProposals(actor: LiquidityActor, proposalIds: readonly string[]): Promise<ConsequentialActionProposal[]> {
+  async getProposals(
+    actor: LiquidityActor,
+    proposalIds: readonly string[],
+  ): Promise<ConsequentialActionProposal[]> {
     if (!proposalIds.length) return [];
     const requested = new Set(proposalIds);
     const currentActor = this.currentActor(actor, this.clock().toISOString());
@@ -1115,7 +1562,13 @@ export class ConsequentialActionService {
   private async disclosureCollectionIds(actor: LiquidityActor): Promise<string[]> {
     const proposals = await this.options.store.listProposals({
       budgetId: actor.budgetId,
-      operations: ['set_category', 'create_rule', 'update_rule', 'delete_rule', 'consequential_action'],
+      operations: [
+        'set_category',
+        'create_rule',
+        'update_rule',
+        'delete_rule',
+        'consequential_action',
+      ],
       superseded: false,
       limit: -1,
     });
@@ -1125,11 +1578,18 @@ export class ConsequentialActionService {
   }
 
   /** Reconcile an acquired action by readback without acquiring or dispatching financial writes. */
-  async reconcile(actor: LiquidityActor, proposalId: string): Promise<ConsequentialActionExecution> {
+  async reconcile(
+    actor: LiquidityActor,
+    proposalId: string,
+  ): Promise<ConsequentialActionExecution> {
     const now = this.clock().toISOString();
     const initialActor = this.currentActor(actor, now);
     const stored = await this.options.store.getProposal(proposalId);
-    if (!stored || stored.operation !== 'consequential_action' || stored.budgetId !== actor.budgetId)
+    if (
+      !stored ||
+      stored.operation !== 'consequential_action' ||
+      stored.budgetId !== actor.budgetId
+    )
       throw new Error('Consequential action proposal unavailable');
     const plan = stored.payload.plan;
     if (
@@ -1137,7 +1597,8 @@ export class ConsequentialActionService {
       stored.state.phase !== 'invalidated_no_dispatch' &&
       stored.state.phase !== 'review_required' &&
       stored.state.phase !== 'write_intent'
-    ) throw new Error('Acquired consequential action required for reconciliation');
+    )
+      throw new Error('Acquired consequential action required for reconciliation');
     // Recovery needs current action-read authority, not permission to publish its financial details.
     const [read] = this.options.store.getProposalApprovalReads({
       proposalIds: [stored.id],
@@ -1154,7 +1615,8 @@ export class ConsequentialActionService {
         read.summary.approvalAuthorized ||
         read.summary.executionAuthorized
       )
-    ) throw new Error('Current consequential-action read authority required');
+    )
+      throw new Error('Current consequential-action read authority required');
     if (stored.state.phase === 'verified' || stored.state.phase === 'invalidated_no_dispatch')
       return this.execution(stored.id, stored.state);
     const preconditions = this.parsePreconditions(stored.preconditions);
@@ -1166,7 +1628,11 @@ export class ConsequentialActionService {
     const now = this.clock().toISOString();
     const initialActor = this.currentActor(actor, now);
     const stored = await this.options.store.getProposal(proposalId);
-    if (!stored || stored.operation !== 'consequential_action' || stored.budgetId !== actor.budgetId)
+    if (
+      !stored ||
+      stored.operation !== 'consequential_action' ||
+      stored.budgetId !== actor.budgetId
+    )
       throw new Error('Consequential action proposal unavailable');
     const plan = stored.payload.plan;
     const action = plan.action;
@@ -1183,7 +1649,8 @@ export class ConsequentialActionService {
     const storedPreconditions = JSON.parse(stored.preconditions) as unknown;
     const preconditions = this.parsePreconditions(storedPreconditions);
     this.requirePreconditionsForPlan(plan, preconditions);
-    if (stored.state.phase !== 'approved') throw new Error('Approved consequential action required');
+    if (stored.state.phase !== 'approved')
+      throw new Error('Approved consequential action required');
     const auth = this.requireHuman(initialActor);
     const serialisedEffect = JSON.stringify({
       operation: stored.operation,
@@ -1208,7 +1675,8 @@ export class ConsequentialActionService {
         : this.execution(stored.id, stored.state);
     }
     const acquisitionAuditId = acquisition.auditRecord?.id;
-    if (!acquisitionAuditId) throw new Error('Acquired consequential action audit identity unavailable');
+    if (!acquisitionAuditId)
+      throw new Error('Acquired consequential action audit identity unavailable');
     const identity = {
       proposalId: stored.id,
       payloadHash: stored.payloadHash,
@@ -1231,13 +1699,24 @@ export class ConsequentialActionService {
           const actorNow = this.currentActor(initialActor, capture.now);
           this.requireAssistance(actorNow, 'execute');
           this.requireAction(actorNow, action, 'execute', 'read');
+          await this.requireUnmaterializedWallets(actorNow, action);
           requireCurrentSession(this.options.store, actorNow, preconditions, capture.now);
           this.requireSupplemental(preconditions, capture.supplemental);
-          const ledger = await this.currentLedger(actorNow, capture.snapshot, capture.transferSettlementRecords);
-          const evidence = resolvedEvidence(capture.snapshot, capture);
+          const ledger = await this.currentLedger(
+            actorNow,
+            capture.snapshot,
+            capture.transferSettlementRecords,
+          );
+          const evidence = resolvedEvidence(capture.snapshot, capture, action);
           requireResolvedEvidence(action, evidence);
           this.requirePrivateSource(actorNow, capture, action, evidence);
-          const request = currentDecisionRequest(capture, action, preconditions, this.options.store, actorNow);
+          const request = currentDecisionRequest(
+            capture,
+            action,
+            preconditions,
+            this.options.store,
+            actorNow,
+          );
           const verificationRequest = verifyConsequentialActionRequestSchema.parse({
             plan,
             phase: 'preconditions',
@@ -1252,7 +1731,13 @@ export class ConsequentialActionService {
             throw new Error(`Consequential action precondition failed: ${verification.reason}`);
           const assertExecutionCurrent = () => {
             this.assertAcquiredExecutionCurrent(
-              initialActor, action, plan, preconditions, identity, serialisedEffect, auth,
+              initialActor,
+              action,
+              plan,
+              preconditions,
+              identity,
+              serialisedEffect,
+              auth,
               acquired.governancePolicyVersion,
             );
             dispatchCount += 1;
@@ -1262,7 +1747,8 @@ export class ConsequentialActionService {
             let persistenceAttempted = false;
             let persisted = false;
             const persistEffect = async (result: unknown) => {
-              if (persistenceAttempted) throw new Error('Consequential-action atom result already recorded');
+              if (persistenceAttempted)
+                throw new Error('Consequential-action atom result already recorded');
               persistenceAttempted = true;
               await this.options.store.recordConsequentialActionEffect({
                 ...identity,
@@ -1280,14 +1766,23 @@ export class ConsequentialActionService {
             };
             try {
               await this.dispatchAtom(
-                atom, atomIndex, plan, ledger, connected, actorNow, assertAtomCurrent, persistEffect,
+                atom,
+                atomIndex,
+                plan,
+                ledger,
+                connected,
+                actorNow,
+                assertAtomCurrent,
+                persistEffect,
+                preconditions,
               );
             } catch (error) {
               if (!persistenceAttempted && fenceCount > 0)
                 await persistEffect({ outcome: 'dispatch_outcome_unknown' });
               throw error;
             }
-            if (!persisted) throw new Error('Consequential-action atom has no durable observed result');
+            if (!persisted)
+              throw new Error('Consequential-action atom has no durable observed result');
           }
         },
         { mutation: true },
@@ -1304,23 +1799,33 @@ export class ConsequentialActionService {
     try {
       return await this.options.liquidity.withConsequentialActionCapture(
         initialActor,
-        async (capture) => {
+        async (capture, connected) => {
+          await this.verifyAmendmentSources(plan, preconditions, connected);
           const actorNow = this.currentActor(initialActor, capture.now);
           this.requireAssistance(actorNow, 'execute');
           this.requireAction(actorNow, action, 'execute', 'read');
           requireCurrentSession(this.options.store, actorNow, preconditions, capture.now);
           this.requireSupplemental(preconditions, capture.supplemental);
           const ledger = await this.currentLedger(
-            actorNow, capture.snapshot, capture.transferSettlementRecords, { plan, preconditions },
+            actorNow,
+            capture.snapshot,
+            capture.transferSettlementRecords,
+            { plan, preconditions },
+            connected,
           );
-          const evidence = resolvedEvidence(capture.snapshot, capture);
+          const evidence = resolvedEvidence(capture.snapshot, capture, action);
           requireResolvedEvidence(action, evidence);
           this.requirePrivateSource(actorNow, capture, action, evidence);
           const verificationRequest = verifyConsequentialActionRequestSchema.parse({
             plan,
             phase: 'postconditions',
             decisionCardRequest: currentDecisionRequest(
-              capture, action, preconditions, this.options.store, actorNow, true,
+              capture,
+              action,
+              preconditions,
+              this.options.store,
+              actorNow,
+              true,
             ),
             currentLedger: ledger,
             resolvedEvidence: evidence,
@@ -1329,11 +1834,22 @@ export class ConsequentialActionService {
           });
           const verification = nativeVerification(this.options.native, verificationRequest);
           if (!verification.valid)
-            return this.execution(stored.id, await this.finalizeReview(
-              acquired, verification.reason ?? 'postcondition_mismatch', ledger,
-            ));
+            return this.execution(
+              stored.id,
+              await this.finalizeReview(
+                acquired,
+                verification.reason ?? 'postcondition_mismatch',
+                ledger,
+              ),
+            );
           this.assertAcquiredExecutionCurrent(
-            initialActor, action, plan, preconditions, identity, serialisedEffect, auth,
+            initialActor,
+            action,
+            plan,
+            preconditions,
+            identity,
+            serialisedEffect,
+            auth,
             acquired.governancePolicyVersion,
           );
           const verificationToken = issueConsequentialActionVerificationToken({
@@ -1348,7 +1864,7 @@ export class ConsequentialActionService {
           });
           return this.execution(stored.id, state);
         },
-        { mutation: true },
+        { mutation: true, postconditionPlan: plan },
       );
     } catch (error) {
       const observed = await this.readbackLedger(initialActor, { plan, preconditions });
@@ -1366,10 +1882,16 @@ export class ConsequentialActionService {
     actor: LiquidityActor,
     assertExecutionCurrent: () => void,
     persistEffect: (result: unknown) => Promise<void>,
+    preconditions: ActionPreconditions,
   ): Promise<void> {
     const writer = connected.connector as unknown as Pick<
       BudgetLedger,
-      'setBudgetAmount' | 'createManualTransaction' | 'createWalletAccount' | 'createLedgerTransfer'
+      | 'setBudgetAmount'
+      | 'createManualTransaction'
+      | 'createEvidenceCredit'
+      | 'amendEvidenceTransaction'
+      | 'createWalletAccount'
+      | 'createLedgerTransfer'
     >;
     switch (atom.kind) {
       case 'reallocation': {
@@ -1389,20 +1911,27 @@ export class ConsequentialActionService {
           };
           let result: BudgetAssignmentResult;
           try {
-            result = await writer.setBudgetAmount(effect.month, effect.categoryId, effect.amount, precondition);
+            result = await writer.setBudgetAmount(
+              effect.month,
+              effect.categoryId,
+              effect.amount,
+              precondition,
+            );
           } catch (error) {
             if (results.length || fenced)
               await persistEffect({
                 status: 'partial',
                 results,
-                ...(fenced ? {
-                  uncertainWrite: {
-                    categoryId: effect.categoryId,
-                    month: effect.month,
-                    amount: effect.amount,
-                    expectedAmount: effect.expectedAmount,
-                  },
-                } : {}),
+                ...(fenced
+                  ? {
+                      uncertainWrite: {
+                        categoryId: effect.categoryId,
+                        month: effect.month,
+                        amount: effect.amount,
+                        expectedAmount: effect.expectedAmount,
+                      },
+                    }
+                  : {}),
               });
             throw error;
           }
@@ -1431,36 +1960,38 @@ export class ConsequentialActionService {
         return;
       }
       case 'manual_transaction':
+      case 'evidence_credit':
+      case 'evidence_amendment':
       case 'evidence_projection': {
         const transaction = atom.transaction;
-        const input: ManualTransactionInput = {
-          parentId: transaction.parentId,
-          correlationId: transaction.correlationId,
-          accountId: transaction.accountId,
-          amount: moneyNumber(transaction.amount),
-          date: transaction.date,
-          ...(transaction.categoryId === null ? { categoryId: null } : { categoryId: transaction.categoryId }),
-          ...(transaction.payeeName === null ? {} : { payeeName: transaction.payeeName }),
-          ...(transaction.notes === null ? {} : { notes: transaction.notes }),
-          ...(transaction.splits.length ? {
-            splits: transaction.splits.map((split) => ({
-              accountId: transaction.accountId,
-              date: transaction.date,
-              categoryId: split.categoryId,
-              amount: moneyNumber(split.amount),
-            })),
-          } : {}),
-        };
+        const input = adapterTransactionInput(transaction);
         let fenced = false;
         let result: ManualTransactionResult;
         try {
-          result = await writer.createManualTransaction(input, {
+          const fence = {
             budgetId: actor.budgetId,
             assertExecutionCurrent: () => {
               assertExecutionCurrent();
               fenced = true;
             },
-          });
+          };
+          if (atom.kind === 'evidence_amendment') {
+            const sources =
+              preconditions.amendmentSources?.filter(
+                (source) => source.transactionId === atom.transaction.parentId,
+              ) ?? [];
+            if (
+              sources.length !== 1 ||
+              canonical(sources[0]!.transaction) !== canonical(atom.expectedSource)
+            )
+              throw new Error('Exact approved amendment source unavailable');
+            result = await writer.amendEvidenceTransaction(
+              { expected: sources[0]!, transaction: input },
+              fence,
+            );
+          } else if (atom.kind === 'evidence_credit')
+            result = await writer.createEvidenceCredit(input, fence);
+          else result = await writer.createManualTransaction(input, fence);
         } catch (error) {
           if (fenced) await persistEffect({ outcome: 'dispatch_outcome_unknown' });
           throw error;
@@ -1469,7 +2000,10 @@ export class ConsequentialActionService {
           if (fenced) await persistEffect(result);
           throw new Error(result.error);
         }
-        if (!fenced) throw new Error('Manual transaction returned success without crossing its dispatch fence');
+        if (!fenced)
+          throw new Error(
+            'Manual transaction returned success without crossing its dispatch fence',
+          );
         await persistEffect(result);
         return;
       }
@@ -1478,6 +2012,14 @@ export class ConsequentialActionService {
           walletId: atom.walletId,
           accountName: atom.accountName,
           currency: atom.currency,
+          ...(atom.opening
+            ? {
+                opening: {
+                  amount: requirePositiveMoney(atom.opening.amount),
+                  date: atom.opening.date,
+                },
+              }
+            : {}),
         };
         let fenced = false;
         let result: WalletAccountResult;
@@ -1497,23 +2039,38 @@ export class ConsequentialActionService {
           if (fenced) await persistEffect(result);
           throw new Error(result.error);
         }
-        if (!fenced) throw new Error('Wallet creation returned success without crossing its dispatch fence');
+        if (!fenced)
+          throw new Error('Wallet creation returned success without crossing its dispatch fence');
         await persistEffect(result);
         return;
       }
       case 'transfer': {
-        const source = ledger.accounts.find((account) => account.accountId === atom.sourceAccountId);
-        const destination = ledger.accounts.find((account) => account.accountId === atom.destinationAccountId);
+        const source = ledger.accounts.find(
+          (account) => account.accountId === atom.sourceAccountId,
+        );
+        const destination = ledger.accounts.find(
+          (account) => account.accountId === atom.destinationAccountId,
+        );
         const dispatch = dispatchPrecondition(plan, atomIndex);
-        const sourceBalance = dispatch.accountBalances.find((account) => account.accountId === atom.sourceAccountId);
-        const destinationBalance = dispatch.accountBalances.find((account) => account.accountId === atom.destinationAccountId);
+        const sourceBalance = dispatch.accountBalances.find(
+          (account) => account.accountId === atom.sourceAccountId,
+        );
+        const destinationBalance = dispatch.accountBalances.find(
+          (account) => account.accountId === atom.destinationAccountId,
+        );
         if (
-          !source || !destination || source.currency !== atom.amount.currency || destination.currency !== atom.amount.currency ||
-          dispatch.accountBalances.length !== 2 || dispatch.assignments.length !== 0 ||
-          !sourceBalance || !destinationBalance ||
+          !source ||
+          !destination ||
+          source.currency !== atom.amount.currency ||
+          destination.currency !== atom.amount.currency ||
+          dispatch.accountBalances.length !== 2 ||
+          dispatch.assignments.length !== 0 ||
+          !sourceBalance ||
+          !destinationBalance ||
           sourceBalance.balance.currency !== atom.amount.currency ||
           destinationBalance.balance.currency !== atom.amount.currency
-        ) throw new Error('Transfer account source unavailable');
+        )
+          throw new Error('Transfer account source unavailable');
         const input: LedgerTransferInput = {
           transferId: atom.transferId,
           correlationId: atom.correlationId,
@@ -1543,18 +2100,76 @@ export class ConsequentialActionService {
           if (fenced) await persistEffect(result);
           throw new Error(result.error);
         }
-        if (!fenced) throw new Error('Transfer returned success without crossing its dispatch fence');
+        if (!fenced)
+          throw new Error('Transfer returned success without crossing its dispatch fence');
         await persistEffect(result);
         return;
       }
     }
   }
 
+  private async verifyAmendmentSources(
+    plan: ConsequentialActionPlan,
+    preconditions: ActionPreconditions,
+    connected: ConnectedBudget,
+  ): Promise<void> {
+    for (const atom of atoms(plan.action))
+      if (atom.kind === 'evidence_amendment') {
+        const sources =
+          preconditions.amendmentSources?.filter(
+            (source) => source.transactionId === atom.expected.parentId,
+          ) ?? [];
+        const reader = connected.connector as unknown as Pick<
+          BudgetLedger,
+          'verifyEvidenceAmendment'
+        >;
+        if (
+          sources.length !== 1 ||
+          !(await reader.verifyEvidenceAmendment({
+            expected: sources[0]!,
+            transaction: adapterTransactionInput(atom.transaction),
+          }))
+        )
+          throw new Error('Complete SDK amendment metadata could not be verified');
+      }
+  }
+  private async requireUnmaterializedWallets(
+    actor: LiquidityActor,
+    action: ConsequentialActionIntent,
+  ): Promise<void> {
+    const requested = new Set(
+      atoms(action).flatMap((atom) =>
+        atom.kind === 'wallet_materialization' ? [atom.walletId] : [],
+      ),
+    );
+    if (!requested.size) return;
+    // Historical identity survives account removal; orphan mappings cannot enter the current ledger.
+    for (const proposal of await this.listActionProposals(actor.budgetId)) {
+      if (
+        proposal.operation !== 'consequential_action' ||
+        proposal.spaceId !== this.requireSpace(actor)
+      )
+        continue;
+      const actionAtoms = atoms(proposal.payload.plan.action);
+      for (const effect of proposal.state.effects) {
+        const atom = actionAtoms[effect.atomIndex];
+        const result = record(record(effect.result)?.result);
+        if (
+          atom?.kind === 'wallet_materialization' &&
+          effect.actionKind === atom.kind &&
+          requested.has(atom.walletId) &&
+          verifiedWalletAccount(atom, result) !== null
+        )
+          throw new Error('invalid_or_existing_wallet');
+      }
+    }
+  }
   private async currentLedger(
     actor: LiquidityActor,
     snapshot: FinancialSnapshot,
     transferSettlementRecords: readonly TransferSettlementRecord[] | null,
     authorization?: PostconditionAuthorization,
+    connected?: ConnectedBudget,
   ): Promise<ConsequentialActionLedger> {
     const proposals = await this.listActionProposals(actor.budgetId);
     const wallets = recordedWallets(proposals, snapshot);
@@ -1565,7 +2180,63 @@ export class ConsequentialActionService {
       ...sourceLedger(snapshot, fallbackCurrencies),
       wallets: wallets.wallets,
       transfers: recordedTransfers(proposals, snapshot, transferSettlementRecords),
+      ...(authorization && connected
+        ? await this.walletOpeningReadbacks(authorization.plan, proposals, connected)
+        : {}),
     };
+  }
+  private async walletOpeningReadbacks(
+    plan: ConsequentialActionPlan,
+    proposals: readonly ActionProposal[],
+    connected: ConnectedBudget,
+  ): Promise<Pick<ConsequentialActionLedger, 'walletOpeningEquities'>> {
+    const equities: NonNullable<ConsequentialActionLedger['walletOpeningEquities']> = [];
+    for (const atom of atoms(plan.action)) {
+      if (atom.kind !== 'wallet_materialization' || !atom.opening) continue;
+      const actionProposals = proposals.filter(
+        (p): p is Extract<ActionProposal, { operation: 'consequential_action' }> =>
+          p.operation === 'consequential_action' &&
+          p.payload.plan.idempotencyKey === plan.idempotencyKey,
+      );
+      const candidates = actionProposals.flatMap((p) =>
+        p.state.effects.flatMap((effect) => {
+          const planned = atoms(p.payload.plan.action)[effect.atomIndex];
+          if (
+            effect.actionKind !== atom.kind ||
+            planned?.kind !== atom.kind ||
+            planned.walletId !== atom.walletId
+          )
+            return [];
+          const result = record(record(effect.result)?.result),
+            accountId = verifiedWalletAccount(atom, result);
+          const expected = record(
+            result?.success === true ? result.openingEquity : result?.openingExpected,
+          );
+          return accountId && expected ? [{ accountId, expected }] : [];
+        }),
+      );
+      if (candidates.length !== 1) continue;
+      const candidate = candidates[0]!;
+      const reader = connected.connector as unknown as Pick<
+        BudgetLedger,
+        'readWalletOpeningEquity'
+      >;
+      if (typeof reader.readWalletOpeningEquity !== 'function')
+        throw new Error('Readonly native wallet equity verification unavailable');
+      const current = await reader.readWalletOpeningEquity(
+        {
+          walletId: atom.walletId,
+          accountName: atom.accountName,
+          currency: atom.currency,
+          opening: { amount: requirePositiveMoney(atom.opening.amount), date: atom.opening.date },
+        },
+        candidate.accountId,
+      );
+      if (canonical(current) !== canonical(candidate.expected))
+        throw new Error('Native wallet opening metadata changed');
+      equities.push(current);
+    }
+    return equities.length ? { walletOpeningEquities: equities } : {};
   }
   private async readbackLedger(
     actor: LiquidityActor,
@@ -1574,13 +2245,15 @@ export class ConsequentialActionService {
     try {
       return await this.options.liquidity.withConsequentialActionCapture(
         actor,
-        async (capture) => this.currentLedger(
-          this.currentActor(actor, capture.now),
-          capture.snapshot,
-          capture.transferSettlementRecords,
-          authorization,
-        ),
-        { mutation: true },
+        async (capture, connected) =>
+          this.currentLedger(
+            this.currentActor(actor, capture.now),
+            capture.snapshot,
+            capture.transferSettlementRecords,
+            authorization,
+            connected,
+          ),
+        { mutation: true, postconditionPlan: authorization.plan },
       );
     } catch {
       return null;
@@ -1599,7 +2272,11 @@ export class ConsequentialActionService {
       if (page.length < 250) return proposals;
     }
   }
-  private sessionCart(actor: LiquidityActor, decision: ActionDecision, now: string): PinnedDecision {
+  private sessionCart(
+    actor: LiquidityActor,
+    decision: ActionDecision,
+    now: string,
+  ): PinnedDecision {
     if (!('origin' in decision)) throw new Error('Saved session selector required');
     const session = this.options.store.liquidity.getSpendSession({
       ...actor,
@@ -1607,14 +2284,16 @@ export class ConsequentialActionService {
       now,
     });
     if (
-      !session || session.version !== decision.origin.sessionVersion ||
+      !session ||
+      session.version !== decision.origin.sessionVersion ||
       Date.parse(session.expiresAt) <= Date.parse(now)
-    ) throw new Error('Saved session unavailable or changed');
+    )
+      throw new Error('Saved session unavailable or changed');
     return pinnedDecisionSchema.parse(sessionCart(session));
   }
   private parsePreconditions(value: unknown): ActionPreconditions {
     const preconditions = storedPreconditionsSchema.parse(
-      typeof value === 'string' ? JSON.parse(value) as unknown : value,
+      typeof value === 'string' ? (JSON.parse(value) as unknown) : value,
     ) as ActionPreconditions;
     if (hash(preconditions.supplemental) !== preconditions.supplementalHash)
       throw new Error('Stored supplemental source binding is invalid');
@@ -1623,11 +2302,16 @@ export class ConsequentialActionService {
       hasOrigin !== (preconditions.sessionCart !== null) ||
       hasOrigin !== (preconditions.recoveryDecision !== null) ||
       hasOrigin !== (preconditions.sessionCartHash !== null) ||
-      (preconditions.sessionCart !== null && hash(preconditions.sessionCart) !== preconditions.sessionCartHash)
-    ) throw new Error('Stored saved-session cart binding is invalid');
+      (preconditions.sessionCart !== null &&
+        hash(preconditions.sessionCart) !== preconditions.sessionCartHash)
+    )
+      throw new Error('Stored saved-session cart binding is invalid');
     return preconditions;
   }
-  private requirePreconditionsForPlan(plan: ConsequentialActionPlan, preconditions: ActionPreconditions): void {
+  private requirePreconditionsForPlan(
+    plan: ConsequentialActionPlan,
+    preconditions: ActionPreconditions,
+  ): void {
     const hasOrigin = preconditions.decision !== null && 'origin' in preconditions.decision;
     if (
       preconditions.nativeActionHash !== plan.actionHash ||
@@ -1637,8 +2321,10 @@ export class ConsequentialActionService {
       hasOrigin !== (preconditions.sessionCart !== null) ||
       hasOrigin !== (preconditions.recoveryDecision !== null) ||
       hasOrigin !== (preconditions.sessionCartHash !== null) ||
-      (preconditions.sessionCart !== null && hash(preconditions.sessionCart) !== preconditions.sessionCartHash)
-    ) throw new Error('Stored consequential-action source envelope is invalid');
+      (preconditions.sessionCart !== null &&
+        hash(preconditions.sessionCart) !== preconditions.sessionCartHash)
+    )
+      throw new Error('Stored consequential-action source envelope is invalid');
   }
   private requireSupplemental(
     preconditions: ActionPreconditions,
@@ -1647,7 +2333,8 @@ export class ConsequentialActionService {
     if (
       hash(current) !== preconditions.supplementalHash ||
       canonical(current) !== canonical(preconditions.supplemental)
-    ) throw new Error('Supplemental source changed during consequential execution');
+    )
+      throw new Error('Supplemental source changed during consequential execution');
   }
   private assertAcquiredExecutionCurrent(
     actor: LiquidityActor,
@@ -1676,7 +2363,8 @@ export class ConsequentialActionService {
       policy.policy.version !== plan.source.financialPolicyVersion ||
       policy.policy.policyHash !== preconditions.financialApprovalPolicy.policyHash ||
       policy.policy.policyHash !== preconditions.decisionCardPolicyHash
-    ) throw new Error('Financial policy changed during consequential execution');
+    )
+      throw new Error('Financial policy changed during consequential execution');
     const evaluation = this.options.store.liquidity.loadEvaluationState({ ...current, now });
     this.requireSupplemental(preconditions, evaluation.supplemental);
     if (evaluation.claimSet.revision !== plan.source.claimSetRevision)
@@ -1703,9 +2391,10 @@ export class ConsequentialActionService {
   private requireAssistance(actor: LiquidityActor, phase: 'propose' | 'execute'): void {
     const policy = this.governancePolicy(actor);
     const maximum = policy?.assistanceMaximum;
-    const ceiling = typeof maximum === 'string' && Object.hasOwn(assistanceLevels, maximum)
-      ? assistanceLevels[maximum as AssistanceMaximum]
-      : assistanceLevels.analysis_only;
+    const ceiling =
+      typeof maximum === 'string' && Object.hasOwn(assistanceLevels, maximum)
+        ? assistanceLevels[maximum as AssistanceMaximum]
+        : assistanceLevels.analysis_only;
     if (ceiling < (phase === 'propose' ? 2 : 3))
       throw new Error('Governance assistance maximum does not permit this action');
   }
@@ -1727,7 +2416,10 @@ export class ConsequentialActionService {
       const capability = actionCapability(atom.kind, capabilityPhase);
       for (const resource of actionResources(atom, actor.budgetId))
         this.options.store.liquidity.requireResource({
-          ...actor, ...resource, capability, phase: authorizationPhase,
+          ...actor,
+          ...resource,
+          capability,
+          phase: authorizationPhase,
         });
     }
   }
@@ -1738,44 +2430,114 @@ export class ConsequentialActionService {
     evidence: readonly ConsequentialActionEvidence[],
   ): void {
     for (const atom of atoms(action)) {
+      if (atom.kind === 'wallet_materialization' && atom.opening) {
+        bindWalletOpening(atom, capture.snapshot.observations, (id) =>
+          capture.projector.allowed('evidence', id, 'source'),
+        );
+        const references = evidence.filter((entry) => entry.subjectId === atom.walletId);
+        if (!references.length) throw new Error('Current wallet statement proof unavailable');
+        for (const reference of references)
+          this.options.store.liquidity.requireResource({
+            ...actor,
+            resourceKind: 'evidence',
+            resourceId: reference.evidenceId,
+            capability: 'source',
+          });
+      }
       if (atom.kind === 'reallocation') {
         for (const assignment of atom.assignments)
           for (const categoryId of [assignment.sourceCategoryId, assignment.destinationCategoryId])
             this.options.store.liquidity.requireResource({
-              ...actor, resourceKind: 'category', resourceId: categoryId, capability: 'liquidity',
+              ...actor,
+              resourceKind: 'category',
+              resourceId: categoryId,
+              capability: 'liquidity',
             });
-      } else if (atom.kind === 'manual_transaction' || atom.kind === 'evidence_projection') {
+      } else if (
+        atom.kind === 'manual_transaction' ||
+        atom.kind === 'evidence_projection' ||
+        atom.kind === 'evidence_credit' ||
+        atom.kind === 'evidence_amendment'
+      ) {
         this.options.store.liquidity.requireResource({
-          ...actor, resourceKind: 'account', resourceId: atom.transaction.accountId, capability: 'liquidity',
+          ...actor,
+          resourceKind: 'account',
+          resourceId: atom.transaction.accountId,
+          capability: 'liquidity',
         });
         if (atom.transaction.categoryId)
           this.options.store.liquidity.requireResource({
-            ...actor, resourceKind: 'category', resourceId: atom.transaction.categoryId, capability: 'liquidity',
+            ...actor,
+            resourceKind: 'category',
+            resourceId: atom.transaction.categoryId,
+            capability: 'liquidity',
           });
         for (const split of atom.transaction.splits)
           this.options.store.liquidity.requireResource({
-            ...actor, resourceKind: 'category', resourceId: split.categoryId, capability: 'liquidity',
+            ...actor,
+            resourceKind: 'category',
+            resourceId: split.categoryId,
+            capability: 'liquidity',
           });
-        if (atom.kind === 'evidence_projection') {
+        if (
+          atom.kind === 'evidence_projection' ||
+          atom.kind === 'evidence_credit' ||
+          atom.kind === 'evidence_amendment'
+        ) {
           for (const evidenceId of atom.evidenceIds) {
-            if (!evidence.some((entry) => entry.evidenceId === evidenceId))
+            if (
+              !evidence.some(
+                (entry) =>
+                  entry.evidenceId === evidenceId &&
+                  (atom.resolutionSubjectId === undefined ||
+                    entry.subjectId === atom.resolutionSubjectId),
+              )
+            )
               throw new Error('Current resolved economic-event evidence unavailable');
             this.options.store.liquidity.requireResource({
-              ...actor, resourceKind: 'evidence', resourceId: evidenceId, capability: 'source',
+              ...actor,
+              resourceKind: 'evidence',
+              resourceId: evidenceId,
+              capability: 'source',
             });
           }
+        }
+        if (atom.kind === 'evidence_amendment') {
+          const visit = (row: typeof atom.expectedSource): void => {
+            for (const capability of ['transaction.view', 'source', 'history'])
+              this.options.store.liquidity.requireResource({
+                ...actor,
+                resourceKind: 'transaction',
+                resourceId: row.id,
+                capability,
+              });
+            if (row.categoryId)
+              for (const capability of ['category', 'name', 'source'])
+                this.options.store.liquidity.requireResource({
+                  ...actor,
+                  resourceKind: 'category',
+                  resourceId: row.categoryId,
+                  capability,
+                });
+            for (const child of row.subtransactions) visit(child);
+          };
+          visit(atom.expectedSource);
         }
       } else if (atom.kind === 'transfer') {
         for (const accountId of [atom.sourceAccountId, atom.destinationAccountId])
           this.options.store.liquidity.requireResource({
-            ...actor, resourceKind: 'account', resourceId: accountId, capability: 'balance',
+            ...actor,
+            resourceKind: 'account',
+            resourceId: accountId,
+            capability: 'balance',
           });
       }
     }
   }
   private requireAuth(actor: LiquidityActor) {
     const auth = actor.auth;
-    if (!auth || auth.actorId !== actor.actorId) throw new Error('Authenticated action principal required');
+    if (!auth || auth.actorId !== actor.actorId)
+      throw new Error('Authenticated action principal required');
     return auth;
   }
   private requireHuman(actor: LiquidityActor) {
@@ -1791,58 +2553,87 @@ export class ConsequentialActionService {
   ): ConsequentialActionProposal {
     const plan = jsonClone(proposal.payload.plan);
     const projectAtom = (atom: ActionAtom): ActionAtom => {
-      if (atom.kind !== 'manual_transaction' && atom.kind !== 'evidence_projection') return atom;
-      const visible = capture.projector.allowed('transaction', atom.transaction.parentId, 'history') &&
+      if (
+        atom.kind !== 'manual_transaction' &&
+        atom.kind !== 'evidence_projection' &&
+        atom.kind !== 'evidence_credit' &&
+        atom.kind !== 'evidence_amendment'
+      )
+        return atom;
+      const visible =
+        capture.projector.allowed('transaction', atom.transaction.parentId, 'history') &&
         capture.projector.allowed('account', atom.transaction.accountId, 'history');
       const transaction = {
         ...atom.transaction,
         ...(visible ? {} : { payeeName: null, notes: null }),
       };
       if (atom.kind === 'manual_transaction') return { ...atom, transaction };
-      const evidenceIds = atom.evidenceIds.filter((id) => capture.projector.allowed('evidence', id, 'source'));
+      const evidenceIds = atom.evidenceIds.filter((id) =>
+        capture.projector.allowed('evidence', id, 'source'),
+      );
       return { ...atom, transaction, evidenceIds };
     };
-    const action: ConsequentialActionIntent = plan.action.kind === 'composite'
-      ? { ...plan.action, actions: plan.action.actions.map(projectAtom) }
-      : projectAtom(plan.action);
+    const action: ConsequentialActionIntent =
+      plan.action.kind === 'composite'
+        ? { ...plan.action, actions: plan.action.actions.map(projectAtom) }
+        : projectAtom(plan.action);
     const evidenceReferences = plan.evidenceReferences
       .filter((evidence) => capture.projector.allowed('evidence', evidence.evidenceId, 'source'))
       .map(({ evidenceId, subjectId, state }) => ({ evidenceId, subjectId, state }));
     const impacts = plan.impacts.filter((impact) => {
-      if (impact.kind === 'evidence_resolution') return capture.projector.allowed('evidence', impact.evidenceId, 'source');
-      if (impact.kind === 'account_readiness' || impact.kind === 'payment_route' || impact.kind === 'transfer_need')
+      if (impact.kind === 'evidence_resolution')
+        return capture.projector.allowed('evidence', impact.evidenceId, 'source');
+      if (
+        impact.kind === 'account_readiness' ||
+        impact.kind === 'payment_route' ||
+        impact.kind === 'transfer_need'
+      )
         return capture.projector.allowed('account', impact.accountId, 'liquidity');
       if (impact.kind === 'reservation_commitment')
         return capture.projector.allowed('category', impact.categoryId, 'liquidity');
       if (impact.kind === 'category_reallocation')
-        return capture.projector.allowed('category', impact.sourceCategoryId, 'liquidity') &&
-          capture.projector.allowed('category', impact.destinationCategoryId, 'liquidity');
+        return (
+          capture.projector.allowed('category', impact.sourceCategoryId, 'liquidity') &&
+          capture.projector.allowed('category', impact.destinationCategoryId, 'liquidity')
+        );
       return true;
     });
     const actionAuthorized = (
       resourceKind: ResourceKind,
       resourceId: string,
       prefix: 'wallet_materialization' | 'transfer',
-    ) => (['propose', 'approve', 'execute'] as const).some((phase) =>
-      capture.projector.allowed(resourceKind, resourceId, `${prefix}:${phase}` as ResourceCapability),
-    );
+    ) =>
+      (['propose', 'approve', 'execute'] as const).some((phase) =>
+        capture.projector.allowed(
+          resourceKind,
+          resourceId,
+          `${prefix}:${phase}` as ResourceCapability,
+        ),
+      );
     const expectedPostconditions = plan.expectedPostconditions.filter((condition) => {
       if (condition.kind === 'account_balance')
         return capture.projector.allowed('account', condition.accountId, 'balance');
       if (condition.kind === 'assignment')
         return capture.projector.allowed('category', condition.categoryId, 'liquidity');
       if (condition.kind === 'transaction')
-        return capture.projector.allowed('transaction', condition.parentId, 'history') &&
-          capture.projector.allowed('account', condition.accountId, 'history');
-      if (condition.kind === 'wallet_mapping')
+        return (
+          capture.projector.allowed('transaction', condition.parentId, 'history') &&
+          capture.projector.allowed('account', condition.accountId, 'history')
+        );
+      if (condition.kind === 'wallet_mapping' || condition.kind === 'wallet_opening_equity')
         return actionAuthorized('wallet', condition.walletId, 'wallet_materialization');
       if (condition.kind === 'transfer_ledger_entry')
-        return actionAuthorized('transfer', condition.transferId, 'transfer') &&
+        return (
+          actionAuthorized('transfer', condition.transferId, 'transfer') &&
           actionAuthorized('account', condition.sourceAccountId, 'transfer') &&
-          actionAuthorized('account', condition.destinationAccountId, 'transfer');
+          actionAuthorized('account', condition.destinationAccountId, 'transfer')
+        );
       return true;
     });
-    const impactForReason: Record<ConsequentialActionPlan['reasonCodes'][number], ConsequentialActionPlan['impacts'][number]['kind']> = {
+    const impactForReason: Record<
+      ConsequentialActionPlan['reasonCodes'][number],
+      ConsequentialActionPlan['impacts'][number]['kind']
+    > = {
       safe_reallocation: 'category_reallocation',
       account_readiness: 'account_readiness',
       payment_route: 'payment_route',
@@ -1857,30 +2648,44 @@ export class ConsequentialActionService {
     const context = preconditions.decisionContext;
     const categoryVisible = (categoryId: string) =>
       capture.projector.allowed('category', categoryId, 'liquidity');
-    const decisionContext = context === null ? null : {
-      ...context,
-      items: context.items
-        .filter((item) => categoryVisible(item.categoryId))
-        .map((item) => ({
-          ...item,
-          accountId: item.accountId !== null &&
-            capture.projector.allowed('account', item.accountId, 'balance')
-            ? item.accountId : null,
-          ...(item.categoryAllocations === undefined ? {} : {
-            categoryAllocations: item.categoryAllocations.filter((allocation) =>
-              categoryVisible(allocation.categoryId),
-            ),
-          }),
-        })),
-      ...(context.adjustments === undefined ? {} : {
-        adjustments: context.adjustments.filter((adjustment) => categoryVisible(adjustment.categoryId)),
-      }),
-      ...(context.warningThresholds === undefined ? {} : {
-        warningThresholds: context.warningThresholds.filter((threshold) =>
-          threshold.basis === 'cart_total' || categoryVisible(threshold.categoryId),
-        ),
-      }),
-    };
+    const decisionContext =
+      context === null
+        ? null
+        : {
+            ...context,
+            items: context.items
+              .filter((item) => categoryVisible(item.categoryId))
+              .map((item) => ({
+                ...item,
+                accountId:
+                  item.accountId !== null &&
+                  capture.projector.allowed('account', item.accountId, 'balance')
+                    ? item.accountId
+                    : null,
+                ...(item.categoryAllocations === undefined
+                  ? {}
+                  : {
+                      categoryAllocations: item.categoryAllocations.filter((allocation) =>
+                        categoryVisible(allocation.categoryId),
+                      ),
+                    }),
+              })),
+            ...(context.adjustments === undefined
+              ? {}
+              : {
+                  adjustments: context.adjustments.filter((adjustment) =>
+                    categoryVisible(adjustment.categoryId),
+                  ),
+                }),
+            ...(context.warningThresholds === undefined
+              ? {}
+              : {
+                  warningThresholds: context.warningThresholds.filter(
+                    (threshold) =>
+                      threshold.basis === 'cart_total' || categoryVisible(threshold.categoryId),
+                  ),
+                }),
+          };
     const publicSource: ConsequentialActionPublicSource = {
       snapshotReference: preconditions.sourceReference,
       policyVersion: plan.source.policyVersion,
@@ -1896,6 +2701,30 @@ export class ConsequentialActionService {
       impacts,
       expectedPostconditions,
       source: publicSource,
+      ...(preconditions.allocationReviews?.length &&
+      plan.evidenceReferences.every((reference) =>
+        capture.projector.allowed('evidence', reference.evidenceId, 'source'),
+      ) &&
+      preconditions.allocationReviews.every(
+        (review) =>
+          review.lineCategories.every((line) =>
+            capture.projector.allowed('category', line.categoryId, 'liquidity'),
+          ) &&
+          capture.snapshot.observations.some(
+            (observation) =>
+              observation.state === 'resolved' &&
+              observation.allocationReview &&
+              canonical(observation.allocationReview) === canonical(review) &&
+              observation.evidence.every(
+                (reference) =>
+                  reference.authorized &&
+                  reference.redaction === 'visible' &&
+                  allocationReferenceReadable(capture, reference.evidenceId),
+              ),
+          ),
+      )
+        ? { allocationReviews: preconditions.allocationReviews }
+        : {}),
     };
     return {
       id: proposal.id,
@@ -1918,7 +2747,8 @@ export class ConsequentialActionService {
       payload: { kind: 'consequential_action', plan: publicPlan },
       state: {
         phase: proposal.state.phase,
-        outcome: proposal.state.phase === 'review_required' ? 'review_required' : proposal.state.outcome,
+        outcome:
+          proposal.state.phase === 'review_required' ? 'review_required' : proposal.state.outcome,
       },
     };
   }
@@ -1931,7 +2761,13 @@ export class ConsequentialActionService {
   }
   private async invalidate(
     acquired: {
-      identity: { proposalId: string; payloadHash: string; actorId: string; idempotencyKey: string; acquisitionAuditId: string };
+      identity: {
+        proposalId: string;
+        payloadHash: string;
+        actorId: string;
+        idempotencyKey: string;
+        acquisitionAuditId: string;
+      };
     },
     dispatchCount: number,
   ): Promise<ConsequentialActionState> {
@@ -1948,7 +2784,13 @@ export class ConsequentialActionService {
   }
   private async finalizeReview(
     acquired: {
-      identity: { proposalId: string; payloadHash: string; actorId: string; idempotencyKey: string; acquisitionAuditId: string };
+      identity: {
+        proposalId: string;
+        payloadHash: string;
+        actorId: string;
+        idempotencyKey: string;
+        acquisitionAuditId: string;
+      };
     },
     reason: unknown,
     observedState: unknown,
@@ -1970,9 +2812,11 @@ export class ConsequentialActionService {
   ): Promise<ConsequentialActionExecution> {
     const acquisition = proposal.state.acquisition;
     if (
-      !acquisition || actor.actorId !== acquisition.actorId ||
+      !acquisition ||
+      actor.actorId !== acquisition.actorId ||
       Date.parse(this.clock().toISOString()) <= Date.parse(proposal.expiresAt)
-    ) return this.execution(proposal.id, proposal.state);
+    )
+      return this.execution(proposal.id, proposal.state);
     const identity = {
       proposalId: proposal.id,
       payloadHash: proposal.payloadHash,
@@ -1981,39 +2825,53 @@ export class ConsequentialActionService {
       acquisitionAuditId: acquisition.acquisitionAuditId,
     };
     try {
-      return await this.options.liquidity.withConsequentialActionCapture(actor, async (capture) => {
-        const current = this.currentActor(actor, capture.now);
-        const action = proposal.payload.plan.action;
-        const ledger = await this.currentLedger(
-          current, capture.snapshot, capture.transferSettlementRecords,
-          { plan: proposal.payload.plan, preconditions },
-        );
-        const evidence = resolvedEvidence(capture.snapshot, capture);
-        const verificationRequest = verifyConsequentialActionRequestSchema.parse({
-          plan: proposal.payload.plan,
-          phase: 'postconditions',
-          decisionCardRequest: currentDecisionRequest(
-            capture, action, preconditions, this.options.store, current, true, proposal.createdAt,
-          ),
-          currentLedger: ledger,
-          resolvedEvidence: evidence,
-          evaluatedAt: capture.now,
-          financialPolicyVersion: financialPolicyVersion(capture),
-        });
-        const verification = nativeVerification(this.options.native, verificationRequest);
-        if (!verification.valid) return this.execution(proposal.id, proposal.state);
-        const verificationToken = issueConsequentialActionVerificationToken({
-          ...identity,
-          verification,
-          verifyRequest: verificationRequest,
-          observedState: ledger,
-        });
-        const state = await this.options.store.finalizeConsequentialActionExecution({
-          ...identity,
-          outcome: { kind: 'verified', verificationToken },
-        });
-        return this.execution(proposal.id, state);
-      });
+      return await this.options.liquidity.withConsequentialActionCapture(
+        actor,
+        async (capture, connected) => {
+          await this.verifyAmendmentSources(proposal.payload.plan, preconditions, connected);
+          const current = this.currentActor(actor, capture.now);
+          const action = proposal.payload.plan.action;
+          const ledger = await this.currentLedger(
+            current,
+            capture.snapshot,
+            capture.transferSettlementRecords,
+            { plan: proposal.payload.plan, preconditions },
+            connected,
+          );
+          const evidence = resolvedEvidence(capture.snapshot, capture, action);
+          const verificationRequest = verifyConsequentialActionRequestSchema.parse({
+            plan: proposal.payload.plan,
+            phase: 'postconditions',
+            decisionCardRequest: currentDecisionRequest(
+              capture,
+              action,
+              preconditions,
+              this.options.store,
+              current,
+              true,
+              proposal.createdAt,
+            ),
+            currentLedger: ledger,
+            resolvedEvidence: evidence,
+            evaluatedAt: capture.now,
+            financialPolicyVersion: financialPolicyVersion(capture),
+          });
+          const verification = nativeVerification(this.options.native, verificationRequest);
+          if (!verification.valid) return this.execution(proposal.id, proposal.state);
+          const verificationToken = issueConsequentialActionVerificationToken({
+            ...identity,
+            verification,
+            verifyRequest: verificationRequest,
+            observedState: ledger,
+          });
+          const state = await this.options.store.finalizeConsequentialActionExecution({
+            ...identity,
+            outcome: { kind: 'verified', verificationToken },
+          });
+          return this.execution(proposal.id, state);
+        },
+        { postconditionPlan: proposal.payload.plan },
+      );
     } catch {
       return this.execution(proposal.id, proposal.state);
     }
@@ -2031,7 +2889,10 @@ export async function loadConsequentialActionNative(
   };
 }
 
-export interface ConsequentialActionCompositionOptions extends Omit<ConsequentialActionServiceOptions, 'native'> {
+export interface ConsequentialActionCompositionOptions extends Omit<
+  ConsequentialActionServiceOptions,
+  'native'
+> {
   nativeBindings?: () => Promise<NativeBindingShim>;
 }
 

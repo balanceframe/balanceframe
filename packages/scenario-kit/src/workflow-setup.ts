@@ -9,6 +9,9 @@ import { join } from 'node:path';
 import { SqliteWorkflowStore, merchantPolicyValueSchema, type OperationalAuth, type ResourceRef } from '@balanceframe/workflow-store';
 import type { LoadedScenario } from './loader.js';
 import { assertScenarioProcessesActive, updateScenarioPersonas, type ScenarioProcesses } from './process-runtime.js';
+import { initializeReceiptEvidence } from './evidence-receipt-scenarios.js';
+import { initializeWalletCategorizationEvidence } from './evidence-wallet-categorization-scenarios.js';
+import { evidenceResult } from './evidence-scenario-support.js';
 
 import type {
   LiquidityPurchaseIntent,
@@ -63,7 +66,7 @@ export type ScenarioMappedEntry =
       readonly completionKey: string;
       readonly completionId: string;
     }
-  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/' };
+  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/evidence' | '/' };
 
 export interface ScenarioInitialized {
   readonly spaceId: string;
@@ -75,6 +78,8 @@ export interface ScenarioInitialized {
   readonly claims: Readonly<Record<string, string>>;
   readonly completions: Readonly<Record<string, string>>;
   readonly entry: ScenarioMappedEntry;
+  /** Exact identifiers returned by normal evidence setup, never imported authority. */
+  readonly evidence?: Readonly<Record<string, string>>;
   /** Runner-private invitation tokens and assistant credentials; never forwarded to the browser. */
   readonly governance?: {
     readonly pendingInvitations: Record<string, { readonly invitationId: string; readonly token: string }>;
@@ -1294,6 +1299,14 @@ export async function initializeScenarioWorkflow(options: {
   );
 
   const governance = await initializeGovernance(client, scenario, personas.credentials, seeded);
+  let evidence: Readonly<Record<string, string>> | undefined;
+  if (scenario.id.startsWith('evidence-')) {
+    const setup = { scenario, seeded, processes, clients: personas.clients, personas: personas.credentials };
+    evidence = ['evidence-wallet-statement', 'evidence-categorization'].includes(scenario.id)
+      ? await initializeWalletCategorizationEvidence(setup) : await initializeReceiptEvidence(setup);
+    await ownerClient.reauthenticate(ownerCredential.password);
+    evidenceResult(await ownerClient.post('/api/evidence/resolve', {}), 'Evidence scenario readiness');
+  }
   const initialized: ScenarioInitialized = {
     spaceId: personas.spaceId,
     budgetId: seeded.budgetId,
@@ -1306,6 +1319,7 @@ export async function initializeScenarioWorkflow(options: {
     claims,
     completions,
     entry: mapEntry(scenario.entry, seeded, sessionState.sessions, completions),
+    ...(evidence ? { evidence } : {}),
     ...(governance ? { governance } : {}),
   };
   privateWorkflows.set(initialized, {

@@ -87,6 +87,26 @@ export function projectConsequentialActionProposal(
         reasonCodes: plan.reasonCodes,
         impacts: plan.impacts,
         expectedPostconditions: plan.expectedPostconditions,
+        ...(plan.allocationReviews === undefined ? {} : {
+          allocationReviews: plan.allocationReviews.map((review) => ({
+            contractVersion: review.contractVersion,
+            sourceHash: review.sourceHash,
+            allocationSetHash: review.allocationSetHash,
+            receiptIds: [...review.receiptIds],
+            targetObservationIds: [...review.targetObservationIds],
+            lineCategories: review.lineCategories.map(({ receiptId, lineId, categoryId }) => ({
+              receiptId,
+              lineId,
+              categoryId,
+            })),
+            cells: review.cells.map(({ receiptId, lineId, targetObservationId, amount }) => ({
+              receiptId,
+              lineId,
+              targetObservationId,
+              amount: { minorUnits: amount.minorUnits, currency: amount.currency },
+            })),
+          })),
+        }),
       },
     },
     expiresAt: proposal.expiresAt,
@@ -127,10 +147,34 @@ function projectAtomicAction(action: AtomicAction) {
     case 'manual_transaction':
       return { kind: action.kind, transaction: projectManualTransaction(action.transaction) };
     case 'evidence_projection':
+    case 'evidence_credit':
       return {
         kind: action.kind,
         transaction: projectManualTransaction(action.transaction),
         evidenceIds: [...action.evidenceIds],
+        ...(action.resolutionSubjectId === undefined ? {} : { resolutionSubjectId: action.resolutionSubjectId }),
+      };
+    case 'evidence_amendment':
+      return {
+        kind: action.kind,
+        transaction: projectManualTransaction(action.transaction),
+        evidenceIds: [...action.evidenceIds],
+        ...(action.resolutionSubjectId === undefined ? {} : { resolutionSubjectId: action.resolutionSubjectId }),
+        expected: {
+          parentId: action.expected.parentId,
+          accountId: action.expected.accountId,
+          amount: { minorUnits: action.expected.amount.minorUnits, currency: action.expected.amount.currency },
+          date: action.expected.date,
+          categoryId: action.expected.categoryId,
+          payeeName: action.expected.payeeName,
+          notes: action.expected.notes,
+          splits: action.expected.splits.map(({ categoryId, amount }) => ({
+            categoryId,
+            amount: { minorUnits: amount.minorUnits, currency: amount.currency },
+          })),
+          transferAccountId: action.expected.transferAccountId,
+        },
+        expectedSource: projectAmendmentSource(action.expectedSource),
       };
     case 'wallet_materialization':
       return {
@@ -138,6 +182,14 @@ function projectAtomicAction(action: AtomicAction) {
         walletId: action.walletId,
         accountName: action.accountName,
         currency: action.currency,
+        ...(action.opening === undefined ? {} : {
+          opening: {
+            amount: { minorUnits: action.opening.amount.minorUnits, currency: action.opening.amount.currency },
+            date: action.opening.date,
+            proofSetHash: action.opening.proofSetHash,
+            activityManifestHash: action.opening.activityManifestHash,
+          },
+        }),
       };
     case 'transfer':
       return {
@@ -152,6 +204,29 @@ function projectAtomicAction(action: AtomicAction) {
     default:
       throw new Error('Unsupported consequential action intent');
   }
+}
+
+function projectAmendmentSource(
+  source: Extract<AtomicAction, { readonly kind: 'evidence_amendment' }>['expectedSource'],
+): typeof source {
+  return {
+    id: source.id,
+    accountId: source.accountId,
+    date: source.date,
+    payeeId: source.payeeId,
+    payeeName: source.payeeName,
+    categoryId: source.categoryId,
+    categoryName: source.categoryName,
+    amount: { minorUnits: source.amount.minorUnits, currency: source.amount.currency },
+    cleared: source.cleared,
+    reconciled: source.reconciled,
+    importedId: source.importedId,
+    importedPayee: source.importedPayee,
+    notes: source.notes,
+    tags: [...source.tags],
+    transferAccountId: source.transferAccountId,
+    subtransactions: source.subtransactions.map(projectAmendmentSource),
+  };
 }
 
 function projectManualTransaction(

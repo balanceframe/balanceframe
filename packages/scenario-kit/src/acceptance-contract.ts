@@ -2,6 +2,11 @@ import { z } from 'zod';
 
 // Approved acceptance scope is independent of catalog-derived display counts.
 export const SCENARIO_ACCEPTANCE_CONTRACT: Readonly<Record<string, readonly string[]>> = {
+  'evidence-receipt-intake': ['manual-photo-pdf-unverified', 'ocr-absent-manual-fallback', 'receipt-total-mismatch', 'receipt-source-scope-denied'],
+  'evidence-plural-allocation': ['plural-matrix-conservation', 'plural-independent-approval', 'plural-stale-and-wrong-grant-denied', 'plural-native-reread-replay'],
+  'evidence-return-lifecycle': ['partial-return-capacity', 'member-fulfillment-clear', 'receipt-version-revoke', 'receipt-history-grant-fence'],
+  'evidence-wallet-statement': ['wallet.import-authority-unknown', 'wallet.fresh-statement-known', 'wallet.revocation-gap-conflict', 'wallet.native-opening-independent-approval-replay'],
+  'evidence-categorization': ['categorization.models-disabled-manual-baseline', 'categorization.reviewed-outcomes-candidate', 'categorization.rule-simulation-approval-suggestion-revoke'],
   'funded-purchase': [],
   'guilt-free-spending': [],
   'unfunded-category': [],

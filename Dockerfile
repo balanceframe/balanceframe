@@ -42,6 +42,7 @@ COPY packages/inference/package.json packages/inference/package.json
 COPY packages/protocol-generated/package.json packages/protocol-generated/package.json
 COPY packages/workflow-store/package.json packages/workflow-store/package.json
 COPY packages/scenario-kit/package.json packages/scenario-kit/package.json
+COPY packages/receipt-ocr/package.json packages/receipt-ocr/package.json
 COPY crates/node-binding/package.json crates/node-binding/package.json
 
 # Install dependencies (frozen lockfile ensures reproducible builds)

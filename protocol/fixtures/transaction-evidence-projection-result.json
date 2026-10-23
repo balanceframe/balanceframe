@@ -1,0 +1,88 @@
+{
+  "contractVersion": "1",
+  "policyVersion": "evidence-policy-1",
+  "resolutionHash": "b682aa9418a6965e0577d23fd1e4a748285cd25e628ee10eb34adde69baa06b1",
+  "events": [
+    {
+      "id": "event:9b3eaf89c2f4c2d65cd205af92633065283fe163947746044eef1b4610d66e3b",
+      "version": "1",
+      "eventType": "p2p_payment",
+      "state": "resolved",
+      "amount": {
+        "minorUnits": "1200",
+        "currency": "USD"
+      },
+      "observationIds": [
+        "bank-1",
+        "wallet-1"
+      ],
+      "evidenceIds": [
+        "doc-bank",
+        "doc-wallet"
+      ],
+      "reasonCodes": [],
+      "projectionObservation": {
+        "kind": "economic_event_resolution",
+        "scope": {
+          "kind": "transaction",
+          "id": "event:9b3eaf89c2f4c2d65cd205af92633065283fe163947746044eef1b4610d66e3b"
+        },
+        "state": "resolved",
+        "observedAt": "2026-10-16T12:01:00Z",
+        "contentHash": "b682aa9418a6965e0577d23fd1e4a748285cd25e628ee10eb34adde69baa06b1",
+        "version": "1",
+        "ledgerEffect": {
+          "accountId": "checking-1",
+          "amount": {
+            "minorUnits": "-1200",
+            "currency": "USD"
+          },
+          "date": "2026-10-15",
+          "categoryId": "food",
+          "payeeName": null,
+          "notes": null,
+          "splits": []
+        },
+        "evidence": [
+          {
+            "evidenceId": "doc-bank",
+            "kind": "economic_event_resolution",
+            "authorized": true,
+            "redaction": "visible"
+          },
+          {
+            "evidenceId": "doc-wallet",
+            "kind": "economic_event_resolution",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "id": "reviewed-funding",
+      "fromId": "wallet-1",
+      "toId": "bank-1",
+      "kind": "funding",
+      "state": "confirmed",
+      "allocatedAmount": {
+        "minorUnits": "1200",
+        "currency": "USD"
+      },
+      "partial": false,
+      "score": 100,
+      "reasonCodes": [
+        "human_reviewed"
+      ],
+      "evidenceIds": [
+        "doc-wallet",
+        "doc-bank"
+      ]
+    }
+  ],
+  "wallets": [],
+  "receipts": [],
+  "blockers": []
+}

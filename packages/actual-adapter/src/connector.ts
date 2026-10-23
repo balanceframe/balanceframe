@@ -56,6 +56,7 @@ import type {
   LedgerId,
   AccountQuery,
   TransactionQuery,
+  EvidenceTransactionSource,
   ManualTransactionInput,
   ManualTransactionPrecondition,
   ManualTransactionResult,
@@ -97,6 +98,12 @@ import type {
   VersionRange,
   ActualMerchantCaptureOptions,
 } from './types.js';
+import {
+  captureEvidenceSource,
+  amendEvidenceSource,
+  evidenceAmendmentMatches,
+} from './evidence-amendment.js';
+import { createWalletWithOpening, readWalletOpeningEquity } from './wallet-opening.js';
 import { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from './types.js';
 
 import type { CredentialStore, ActualCredentials } from './credentials.js';
@@ -203,6 +210,10 @@ function manualInteger(value: unknown): bigint | null {
 function manualNegativeInteger(value: unknown): bigint | null {
   const integer = manualInteger(value);
   return integer !== null && integer < 0n ? integer : null;
+}
+function evidencePositiveInteger(value: unknown): bigint | null {
+  const integer = manualInteger(value);
+  return integer !== null && integer > 0n ? integer : null;
 }
 
 function isManualDate(value: unknown): value is string {
@@ -348,7 +359,10 @@ function verifyManualTransaction(
       return { verified: false, reason: 're-read split child fields did not match the request' };
     }
     const matchedChild = unmatched[index]!;
-    const matchedAmount = manualNegativeInteger(matchedChild.amount);
+    const matchedAmount =
+      input.amount > 0
+        ? evidencePositiveInteger(matchedChild.amount)
+        : manualNegativeInteger(matchedChild.amount);
     if (matchedAmount === null) {
       return {
         verified: false,
@@ -358,7 +372,10 @@ function verifyManualTransaction(
     childTotal += matchedAmount;
     unmatched.splice(index, 1);
   }
-  const parentAmount = manualNegativeInteger(parent.amount);
+  const parentAmount =
+    input.amount > 0
+      ? evidencePositiveInteger(parent.amount)
+      : manualNegativeInteger(parent.amount);
   if (parentAmount === null || childTotal !== parentAmount) {
     return { verified: false, reason: 're-read split amounts did not conserve the parent amount' };
   }
@@ -903,12 +920,86 @@ export class ActualConnector implements BudgetLedger {
    * The application owns approval. The adapter owns current Actual
    * preconditions, duplicate/import review, synchronization, and verification.
    */
+  async verifyEvidenceAmendment(input: {
+    expected: EvidenceTransactionSource;
+    transaction: ManualTransactionInput;
+  }): Promise<boolean> {
+    this.assertInitialized();
+    try {
+      const after = await this.captureEvidenceTransaction({
+        budgetId: input.expected.budgetId,
+        accountId: input.expected.accountId,
+        transactionId: input.expected.transactionId,
+      });
+      return evidenceAmendmentMatches(input.expected, input.transaction, after);
+    } catch {
+      return false;
+    }
+  }
+  async captureEvidenceTransaction(input: {
+    budgetId: string;
+    accountId: string;
+    transactionId: string;
+  }): Promise<EvidenceTransactionSource> {
+    this.assertInitialized();
+    if (this._budgetInfo?.id !== input.budgetId)
+      throw new Error('Evidence settlement budget is not selected');
+    return this.withCacheLock(input.budgetId, async () => {
+      const source = await captureEvidenceSource(this.client, this.currency, input);
+      if (this._budgetInfo?.id !== input.budgetId)
+        throw new Error('Selected evidence budget changed');
+      return source;
+    });
+  }
+  async amendEvidenceTransaction(
+    input: { expected: EvidenceTransactionSource; transaction: ManualTransactionInput },
+    precondition: ManualTransactionPrecondition,
+  ): Promise<ManualTransactionResult> {
+    this.assertMutationAllowed('amendEvidenceTransaction');
+    this.assertInitialized();
+    if (this._budgetInfo?.id !== precondition.budgetId)
+      return {
+        success: false,
+        parentId: input.transaction.parentId,
+        correlationId: input.transaction.correlationId,
+        code: 'BUDGET_PRECONDITION_FAILED',
+        error: 'Evidence settlement budget is not selected',
+      };
+    return this.withCacheLock(precondition.budgetId, () =>
+      amendEvidenceSource(this.client, this.currency, input, {
+        ...precondition,
+        assertExecutionCurrent: () => {
+          if (this._budgetInfo?.id !== precondition.budgetId)
+            throw new Error('Selected evidence budget changed');
+          precondition.assertExecutionCurrent();
+        },
+      }),
+    );
+  }
+
   async createManualTransaction(
     input: ManualTransactionInput,
     precondition: ManualTransactionPrecondition,
   ): Promise<ManualTransactionResult> {
     this.assertMutationAllowed('createManualTransaction');
+    return this.createAuthorizedTransaction(input, precondition, 'debit');
+  }
 
+  /** Create only an explicitly authorized positive evidence credit through the same fenced write/readback port. */
+  async createEvidenceCredit(
+    input: ManualTransactionInput,
+    precondition: ManualTransactionPrecondition,
+  ): Promise<ManualTransactionResult> {
+    this.assertMutationAllowed('createEvidenceCredit');
+    return this.createAuthorizedTransaction(input, precondition, 'credit');
+  }
+
+  private async createAuthorizedTransaction(
+    input: ManualTransactionInput,
+    precondition: ManualTransactionPrecondition,
+    direction: 'debit' | 'credit',
+  ): Promise<ManualTransactionResult> {
+    const signedInteger = direction === 'credit' ? evidencePositiveInteger : manualNegativeInteger;
     const failure = (
       code: ManualTransactionErrorCode,
       error: string,
@@ -965,11 +1056,11 @@ export class ActualConnector implements BudgetLedger {
       return failure('INVALID_INPUT', 'Manual transaction notes must be a string.');
     }
 
-    const parentAmount = manualNegativeInteger(input.amount);
+    const parentAmount = signedInteger(input.amount);
     if (parentAmount === null) {
       return failure(
         'AMOUNT_OUT_OF_RANGE',
-        'Manual transaction amount must be a negative integer within the signed i64 range.',
+        `Transaction amount must be a ${direction === 'credit' ? 'positive' : 'negative'} integer within the signed i64 range.`,
       );
     }
 
@@ -1007,11 +1098,11 @@ export class ActualConnector implements BudgetLedger {
             'Split child date must match the selected transaction date.',
           );
         }
-        const splitAmount = manualNegativeInteger(split.amount);
+        const splitAmount = signedInteger(split.amount);
         if (splitAmount === null) {
           return failure(
             'AMOUNT_OUT_OF_RANGE',
-            'Each split amount must be a negative integer within the signed i64 range.',
+            `Each split amount must be a ${direction === 'credit' ? 'positive' : 'negative'} integer within the signed i64 range.`,
           );
         }
         splitTotal += splitAmount;
@@ -1546,6 +1637,16 @@ export class ActualConnector implements BudgetLedger {
     });
   }
 
+  async readWalletOpeningEquity(input: WalletAccountInput, accountId: string) {
+    const budgetId = this._budgetInfo?.id;
+    if (!budgetId || input.currency !== this.currency) throw new Error('Wallet opening source unavailable');
+    return this.withCacheLock(budgetId, async () => {
+      const result = await readWalletOpeningEquity(this.client, input, accountId);
+      if (this._budgetInfo?.id !== budgetId) throw new Error('Selected Actual budget changed');
+      return result;
+    });
+  }
+
   async createWalletAccount(
     input: WalletAccountInput,
     precondition: WalletAccountPrecondition,
@@ -1575,6 +1676,12 @@ export class ActualConnector implements BudgetLedger {
         'Wallet authority or currency does not match the selected source.',
       );
     }
+
+    if (input.opening) return this.withCacheLock(budgetId, () =>
+      createWalletWithOpening(this.client, input, precondition, () => {
+        if (this._budgetInfo?.id !== budgetId) throw new Error('Selected Actual budget changed');
+      }),
+    );
 
     return this.withCacheLock(budgetId, async () => {
       if (this._budgetInfo?.id !== budgetId)
@@ -2230,15 +2337,16 @@ export class ActualConnector implements BudgetLedger {
       }
     }
 
-    // Remove all per-budget caches
+    // The SDK owns live SQLite files until shutdown has drained its work. Keep
+    // caches and credentials intact if shutdown fails so quarantined cleanup can retry.
+    await this.client.shutdown();
+
+    // Remove all per-budget caches only after the SDK has released them.
     for (const [, cache] of this.caches) {
       this.removeCacheDir(cache.cacheDir);
     }
     this.caches.clear();
     this.cacheLocks.clear();
-
-    // Shut down the Actual client
-    await this.client.shutdown();
 
     // Remove stored credentials
     await this.credStore.delete();

@@ -1,3 +1,4 @@
+import { registerProtocolSchemas } from './src/schema-registry.js';
 import fs from 'node:fs';
 import Ajv from 'ajv';
 import { describe, expect, it } from 'vitest';
@@ -10,15 +11,7 @@ const load = (relative: string) =>
   JSON.parse(fs.readFileSync(new URL(relative, import.meta.url), 'utf8'));
 const fixture = load('../../protocol/fixtures/account-aware-liquidity.json');
 const ajv = new Ajv({ allErrors: true, strict: false });
-for (const name of [
-  'protocol-v1',
-  'financial-snapshot-v1',
-  'prospective-decision-v1',
-  'prospective-claim-v1',
-  'account-aware-liquidity-v1',
-]) {
-  ajv.addSchema(load(`../../protocol/json-schema/${name}.json`));
-}
+registerProtocolSchemas(ajv);
 const validateInput = ajv.compile({
   $ref: 'https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/LiquidityInput',
 });

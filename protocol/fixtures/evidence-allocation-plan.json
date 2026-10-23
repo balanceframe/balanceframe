@@ -1,0 +1,234 @@
+{
+  "contractVersion": "1",
+  "evidence": {
+    "contractVersion": "1",
+    "policyVersion": "evidence-policy-1",
+    "maxSettlementDays": 5,
+    "observations": [
+      {
+        "id": "bank-1",
+        "kind": "ledger_transaction",
+        "sourceId": "actual",
+        "externalEventId": null,
+        "date": "2026-10-16",
+        "amount": {
+          "minorUnits": "700",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "purchase",
+        "counterparty": "person-1",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": "actual-bank-1",
+        "ledgerEffect": null,
+        "reliability": 100,
+        "provenance": {
+          "documentId": "doc-bank",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parserVersion": "actual-v1",
+          "sourceTimestamp": "2026-10-16T12:00:00Z",
+          "receivedAt": "2026-10-16T12:01:00Z"
+        },
+        "ledgerAccountId": "checking"
+      },
+      {
+        "id": "purchase-1",
+        "kind": "receipt",
+        "sourceId": "retail-1",
+        "externalEventId": null,
+        "date": "2026-10-15",
+        "amount": {
+          "minorUnits": "1200",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "purchase",
+        "counterparty": "person-1",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": null,
+        "ledgerEffect": null,
+        "reliability": 0,
+        "provenance": {
+          "documentId": "doc-receipt-1",
+          "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "parserVersion": "wallet-v1",
+          "sourceTimestamp": "2026-10-15T12:00:00Z",
+          "receivedAt": "2026-10-15T12:01:00Z"
+        }
+      },
+      {
+        "id": "bank-2",
+        "kind": "ledger_transaction",
+        "sourceId": "actual",
+        "externalEventId": null,
+        "date": "2026-10-16",
+        "amount": {
+          "minorUnits": "500",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "purchase",
+        "counterparty": "person-1",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": "actual-bank-2",
+        "ledgerEffect": null,
+        "reliability": 100,
+        "provenance": {
+          "documentId": "doc-bank-2",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parserVersion": "actual-v1",
+          "sourceTimestamp": "2026-10-16T12:00:00Z",
+          "receivedAt": "2026-10-16T12:01:00Z"
+        },
+        "ledgerAccountId": "checking"
+      }
+    ],
+    "relationships": [
+      {
+        "id": "fund-bank-1",
+        "fromId": "purchase-1",
+        "toId": "bank-1",
+        "kind": "partial_funding",
+        "state": "confirmed",
+        "allocatedAmount": {
+          "minorUnits": "700",
+          "currency": "USD"
+        },
+        "partial": true,
+        "score": 100,
+        "reasonCodes": ["human_reviewed"],
+        "evidenceIds": ["doc-receipt-1"]
+      },
+      {
+        "id": "fund-bank-2",
+        "fromId": "purchase-1",
+        "toId": "bank-2",
+        "kind": "partial_funding",
+        "state": "confirmed",
+        "allocatedAmount": {
+          "minorUnits": "500",
+          "currency": "USD"
+        },
+        "partial": true,
+        "score": 100,
+        "reasonCodes": ["human_reviewed"],
+        "evidenceIds": ["doc-receipt-1"]
+      }
+    ],
+    "wallets": [],
+    "receipts": [
+      {
+        "id": "receipt-1",
+        "observationId": "purchase-1",
+        "version": 1,
+        "supersedesId": null,
+        "fulfillmentGroupId": null,
+        "total": {
+          "minorUnits": "1200",
+          "currency": "USD"
+        },
+        "discount": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "tax": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "lines": [
+          {
+            "id": "line-1",
+            "rawDescription": "two items",
+            "normalizedDescription": "item",
+            "sku": "sku-1",
+            "department": null,
+            "productFamily": null,
+            "quantityMicros": 1000000,
+            "unitGross": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "gross": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "discount": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "tax": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "net": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "categoryId": null,
+            "memberId": null,
+            "evidenceStrength": 0,
+            "reasonCodes": [],
+            "returnOfLineId": null
+          }
+        ],
+        "tenders": [
+          {
+            "id": "bank-1",
+            "kind": "card",
+            "amount": {
+              "minorUnits": "700",
+              "currency": "USD"
+            },
+            "observationId": "bank-1",
+            "partial": false
+          },
+          {
+            "id": "bank-2",
+            "kind": "card",
+            "amount": {
+              "minorUnits": "500",
+              "currency": "USD"
+            },
+            "observationId": "bank-2",
+            "partial": false
+          }
+        ]
+      }
+    ]
+  },
+  "receiptIds": ["receipt-1"],
+  "targetObservationIds": ["bank-1", "bank-2"],
+  "lineCategories": [
+    {
+      "receiptId": "receipt-1",
+      "lineId": "line-1",
+      "categoryId": "food"
+    }
+  ],
+  "cells": [
+    {
+      "receiptId": "receipt-1",
+      "lineId": "line-1",
+      "targetObservationId": "bank-1",
+      "amount": {
+        "minorUnits": "700",
+        "currency": "USD"
+      }
+    },
+    {
+      "receiptId": "receipt-1",
+      "lineId": "line-1",
+      "targetObservationId": "bank-2",
+      "amount": {
+        "minorUnits": "500",
+        "currency": "USD"
+      }
+    }
+  ]
+}

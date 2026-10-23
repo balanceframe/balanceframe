@@ -1,0 +1,148 @@
+{
+  "contractVersion": "1",
+  "rule": {
+    "id": "sku-rule-1",
+    "sourceId": "wallet-source",
+    "fundingInstrumentId": "card-1",
+    "sku": null,
+    "normalizedDescription": null,
+    "categoryId": "food",
+    "counterparty": "person-1",
+    "criterion": {
+      "kind": "department",
+      "value": "produce"
+    }
+  },
+  "evidence": {
+    "contractVersion": "1",
+    "policyVersion": "evidence-policy-1",
+    "maxSettlementDays": 5,
+    "observations": [
+      {
+        "id": "wallet-1",
+        "kind": "wallet_payment",
+        "sourceId": "wallet-source",
+        "externalEventId": "payment-1",
+        "date": "2026-10-15",
+        "amount": {
+          "minorUnits": "1200",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "p2p_payment",
+        "counterparty": "person-1",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": null,
+        "ledgerEffect": null,
+        "reliability": 100,
+        "provenance": {
+          "documentId": "doc-wallet",
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parserVersion": "wallet-v1",
+          "sourceTimestamp": "2026-10-15T12:00:00Z",
+          "receivedAt": "2026-10-15T12:01:00Z"
+        }
+      },
+      {
+        "id": "bank-1",
+        "kind": "ledger_transaction",
+        "sourceId": "actual",
+        "externalEventId": "payment-1",
+        "date": "2026-10-16",
+        "amount": {
+          "minorUnits": "1200",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "unknown",
+        "counterparty": "person-1",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": "actual-bank-1",
+        "ledgerEffect": null,
+        "reliability": 100,
+        "provenance": {
+          "documentId": "doc-bank",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parserVersion": "actual-v1",
+          "sourceTimestamp": "2026-10-16T12:00:00Z",
+          "receivedAt": "2026-10-16T12:01:00Z"
+        }
+      }
+    ],
+    "relationships": [],
+    "wallets": [],
+    "receipts": [
+      {
+        "id": "receipt-1",
+        "observationId": "wallet-1",
+        "version": 1,
+        "supersedesId": null,
+        "fulfillmentGroupId": null,
+        "total": {
+          "minorUnits": "1200",
+          "currency": "USD"
+        },
+        "discount": {
+          "minorUnits": "100",
+          "currency": "USD"
+        },
+        "tax": {
+          "minorUnits": "100",
+          "currency": "USD"
+        },
+        "lines": [
+          {
+            "id": "line-1",
+            "rawDescription": "two items",
+            "normalizedDescription": "item",
+            "sku": "sku-1",
+            "department": "produce",
+            "productFamily": null,
+            "quantityMicros": 2000000,
+            "unitGross": {
+              "minorUnits": "600",
+              "currency": "USD"
+            },
+            "gross": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "discount": {
+              "minorUnits": "100",
+              "currency": "USD"
+            },
+            "tax": {
+              "minorUnits": "100",
+              "currency": "USD"
+            },
+            "net": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "categoryId": null,
+            "memberId": null,
+            "evidenceStrength": 100,
+            "reasonCodes": [],
+            "returnOfLineId": null
+          }
+        ],
+        "tenders": [
+          {
+            "id": "card",
+            "kind": "card",
+            "amount": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "observationId": "bank-1"
+          }
+        ]
+      }
+    ]
+  },
+  "actualRuleCategories": []
+}
