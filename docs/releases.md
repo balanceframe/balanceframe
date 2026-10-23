@@ -1,5 +1,13 @@
 # Release Policy
 
+## Unreleased — fixes
+
+- Native Windows now rejects the exported `EncryptedCredentialStore` before
+  filesystem access. Existing files are preserved, with no automatic migration
+  or fallback. Explicit `EnvCredentialStore` and Linux/Docker persistence remain
+  supported; the application's default credential path already uses the
+  environment store. See [ADR 0007](adr/0007-windows-file-credential-store-boundary.md).
+
 ## Unreleased — Phase 9 controlled consequential actions
 
 - Exact reallocation proposals reuse ordinary selected-space authorization, immutable native planning, distinct-human approval, durable acquisition, Actual write/readback and native postcondition verification. Space assistance is a maximum; absent legacy configuration disables the new action workflow without changing existing categorization or rule permissions.

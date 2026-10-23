@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,20 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+
+test('portable CI gives each mandatory test command its own failure gate', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/test.yml', import.meta.url), 'utf8');
+  const portable = workflow.slice(workflow.indexOf('\n  portable:'));
+  const steps = portable.split(/\n      - name: /).slice(1);
+  for (const name of ['actual-adapter', 'application', 'cli', 'test-contract']) {
+    const command = `pnpm --filter @balanceframe/${name} test`;
+    const matching = steps.filter((step) => step.includes(command));
+    assert.equal(matching.length, 1, `${name} must run exactly once`);
+    assert.ok(matching[0].includes(`\n        run: ${command}\n`),
+      `${name} must exit its own step so a later PowerShell command cannot mask failure`);
+    assert.doesNotMatch(matching[0], /continue-on-error:\s*true/);
+  }
+});
 
 async function waitForFile(path) {
   for (let attempt = 0; attempt < 1000; attempt++) {
@@ -49,7 +64,7 @@ function fixture(t, mode = 'exit') {
   put(
     'packages/example/package.json',
     JSON.stringify({
-      name: '@balanceframe/example',
+      name: mode.startsWith('entrypoint') ? '@balanceframe/cli' : '@balanceframe/example',
       scripts: { test: 'vitest run', coverage: 'vitest run --coverage' },
     }),
   );
@@ -113,10 +128,32 @@ if (process.argv.includes('napi')) {
     setInterval(() => {
       if (process.env.TEST_MODE === 'fail-child' && fs.existsSync(process.env.TEST_GRANDCHILD_READY)) process.exit(27);
     }, 10);
-  } else process.exit(27);
+  } else if (!process.env.TEST_MODE.startsWith('entrypoint')) process.exit(27);
 }
 `,
   );
+  if (mode.startsWith('entrypoint')) {
+    mkdirSync(join(root, 'apps'), { recursive: true });
+    symlinkSync(
+      fileURLToPath(new URL('../../apps/cli', import.meta.url)),
+      join(root, 'apps/cli'),
+      'dir',
+    );
+    copyFileSync(
+      fileURLToPath(new URL('cli.test.mjs', import.meta.url)),
+      join(root, 'scripts/coverage/cli.test.mjs'),
+    );
+    // Stop before the coverage-tool suite would recursively run this fixture.
+    nodeScript(
+      'shims/node',
+      `
+const { spawnSync } = require('node:child_process');
+if (process.argv.includes('scripts/coverage/check.test.mjs')) process.exit(29);
+const result = spawnSync(${JSON.stringify(process.execPath)}, process.argv.slice(2), { stdio: 'inherit', env: process.env });
+process.exit(result.status ?? 1);
+`,
+    );
+  }
   put(
     'tests/actual-integration/setup-fixture-server.sh',
     `#!/usr/bin/env bash
@@ -170,6 +207,7 @@ chmod 600 "$TEST_ROOT/tests/actual-integration/.env.test"
     LLVM_PROFDATA: `${root}/shims/llvm-profdata`,
   };
   delete env.NODE_OPTIONS;
+  delete env.NODE_TEST_CONTEXT;
   const child = spawn('bash', ['scripts/coverage/run.sh'], {
     cwd: root,
     env,
@@ -273,5 +311,25 @@ test('terminates a failed command’s surviving descendant before restoring fixt
     readFileSync(join(f.root, 'tests/actual-integration/.env.test'), 'utf8'),
     "ACTUAL_SECRET_KEY='prior-test-only-secret'\n",
   );
+  assert.equal(existsSync(join(f.root, '.coverage-run.lock')), false);
+});
+
+test('runs executable behavior assertions and inherits their subprocess entrypoint coverage', async (t) => {
+  const f = fixture(t, 'entrypoint');
+  const [code] = await f.exited;
+  assert.equal(code, 29, f.output());
+  for (const behavior of [
+    'prints the package version',
+    'explains consequential action',
+    'explains research consent',
+    'dispatches invalid commands',
+  ])
+    assert.match(f.output(), new RegExp(`executable ${behavior}`));
+  const report = readFileSync(join(f.root, 'coverage/js/cli/entrypoint-lcov.info'), 'utf8');
+  assert.match(report, /SF:.*apps\/cli\/bin\/cli.js/);
+  const found = Number(report.match(/^LF:(\d+)$/m)?.[1]);
+  const hit = Number(report.match(/^LH:(\d+)$/m)?.[1]);
+  assert.ok(found > 0, report);
+  assert.equal(hit, found, report);
   assert.equal(existsSync(join(f.root, '.coverage-run.lock')), false);
 });

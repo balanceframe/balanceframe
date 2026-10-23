@@ -41,6 +41,7 @@ printf '%s\n' \
 canonical_json="$tmpdir/canonical.json"
 actual_json="$tmpdir/actual.json"
 research_json="$tmpdir/research.json"
+research_policy_json="$tmpdir/research-policy.json"
 render_failed=0
 
 render() {
@@ -54,7 +55,7 @@ render() {
       --project-directory "$project_dir" \
       --project-name balanceframe-compose-validation \
       --env-file "$env_file" \
-      -f "$COMPOSE" "$@" config --format json \
+      -f "$COMPOSE" "$@" \
       > "$output" 2> "$tmpdir/compose-error.log"; then
     echo "PASS: $label Compose JSON rendered"
   else
@@ -63,15 +64,17 @@ render() {
   fi
 }
 
-render "canonical" "$canonical_json" || render_failed=1
-render "Actual overlay" "$actual_json" -f "$ACTUAL_OVERLAY" || render_failed=1
-render "research overlay" "$research_json" -f "$RESEARCH_OVERLAY" || render_failed=1
+render "canonical" "$canonical_json" config --format json || render_failed=1
+render "Actual overlay" "$actual_json" -f "$ACTUAL_OVERLAY" config --format json || render_failed=1
+render "research overlay" "$research_json" -f "$RESEARCH_OVERLAY" config --format json || render_failed=1
+render "research source policy" "$research_policy_json" -f "$RESEARCH_OVERLAY" \
+  config --no-interpolate --no-normalize --format json || render_failed=1
 
 if [[ "$render_failed" -eq 0 ]]; then
   if env -i PATH="$PATH" HOME="$tmpdir" TMPDIR="$tmpdir" \
-    node - "$canonical_json" "$actual_json" "$research_json" "$source_path" <<'NODE'
+    node - "$canonical_json" "$actual_json" "$research_json" "$research_policy_json" "$source_path" <<'NODE'
 const fs = require('node:fs');
-const [canonicalPath, actualPath, researchPath, sourcePath] = process.argv.slice(2);
+const [canonicalPath, actualPath, researchPath, researchPolicyPath, sourcePath] = process.argv.slice(2);
 let failures = 0;
 function check(condition, label) {
   console.log(`${condition ? 'PASS' : 'FAIL'}: ${label}`);
@@ -95,9 +98,25 @@ function hasVolume(config, name) { return Object.hasOwn(config?.volumes ?? {}, n
 const canonical = load(canonicalPath);
 const actual = load(actualPath);
 const research = load(researchPath);
+const researchPolicy = load(researchPolicyPath);
 check(canonical !== null, 'canonical Compose JSON parsed privately');
 check(actual !== null, 'Actual overlay Compose JSON parsed privately');
 check(research !== null, 'research overlay Compose JSON parsed privately');
+check(researchPolicy !== null, 'research source policy Compose JSON parsed privately');
+
+if (researchPolicy) {
+  const sourceMounts = volumes(researchPolicy.services?.balanceframe);
+  const dataMounts = sourceMounts.filter((mount) => mount.type === 'volume' &&
+    mount.source === 'balanceframe-data' && mount.target === '/data');
+  const mounts = sourceMounts.filter((mount) => mount.target === '/run/secrets/merchant-research.json');
+  const mount = mounts[0];
+  // The raw model preserves explicit booleans that typed Compose JSON can elide.
+  // Reject extra raw mounts whose targets could collide after interpolation.
+  check(sourceMounts.length === 2 && dataMounts.length === 1 &&
+    mounts.length === 1 && mount.type === 'bind' && mount.read_only === true &&
+    mount.bind?.create_host_path === false,
+  'research source explicitly forbids host-path creation on the exact read-only bind');
+}
 
 if (canonical) {
   const names = Object.keys(canonical.services ?? {}).sort();
@@ -140,7 +159,10 @@ if (research) {
     typeof environment.VALUESERP_API_KEY === 'string' && environment.VALUESERP_API_KEY.length > 0,
   'research overlay sets the fixed config path and required server key');
   check(mounts.length === 1 && mount.type === 'bind' && mount.source === sourcePath &&
-    mount.read_only === true && mount.bind?.create_host_path === false,
+    mount.read_only === true && mount.bind &&
+    // Compose v2.40 omits false from JSON but retains the explicit bind object.
+    (mount.bind.create_host_path === false ||
+      !Object.hasOwn(mount.bind, 'create_host_path')),
   'research overlay uses one exact read-only bind and forbids host-path creation');
 }
 

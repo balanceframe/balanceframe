@@ -2,14 +2,18 @@
 // Runtime entrypoint for the balanceframe CLI.
 // Relies on the compiled output from `pnpm build`.
 import { main } from '../dist/index.js';
+import { readFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
+const showVersion = args.length === 1 && args[0] === '--version';
 const showActionHelp = args[0] === 'proposals' && args[1] === 'action' &&
   args.length === 3 && args[2] === '--help';
 const showHelp = args[0] === '--help' && args.length === 1 ||
   args[0] === 'merchant' && args.at(-1) === '--help' &&
   (args.length === 2 || args.length === 3 && ['research', 'space-policy'].includes(args[1]));
-const result = showActionHelp
+const result = showVersion
+  ? JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  : showActionHelp
   ? `Consequential action proposal (authenticated selected space):
   balanceframe proposals action --action-file ACTION.json --json
 

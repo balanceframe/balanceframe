@@ -171,14 +171,14 @@ while IFS=$'\t' read -r package report; do
   run_child pnpm --filter "$package" exec vitest run --coverage "${coverage_args[@]}" --reporter=default --reporter=json --outputFile="$ROOT/coverage/$report/tests.json"
 done <"$TEMP/packages.tsv"
 
-# Execute the real CLI entrypoint, not a mock or a generated-source substitute.
-# Its child-process V8 record replaces Vitest's unimported-file placeholder.
+# Assert real CLI behavior; inherited V8 coverage from its subprocesses replaces
+# Vitest's unimported-entrypoint placeholder.
 run_child node --experimental-test-coverage --test \
   '--test-coverage-include=**/apps/cli/bin/*.js' \
   --test-reporter=spec --test-reporter=lcov \
   --test-reporter-destination=stdout \
   --test-reporter-destination=coverage/js/cli/entrypoint-lcov.info \
-  apps/cli/bin/cli.js
+  scripts/coverage/cli.test.mjs
 
 # Node's coverage reporter includes checker subprocess execution from the
 # executable behavior suite; its production script gets the same 80% gate.

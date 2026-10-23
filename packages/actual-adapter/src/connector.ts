@@ -21,7 +21,7 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -2305,7 +2305,7 @@ export class ActualConnector implements BudgetLedger {
   async getCompatibility(): Promise<CompatibilityResult> {
     const serverVersion = this._serverVersion ?? 'unknown';
     const minVersion = this.compatibilityRange?.min ?? '24.0.0';
-    const maxVersion = this.compatibilityRange?.max ?? '26.7.0';
+    const maxVersion = this.compatibilityRange?.max ?? '26.10.0';
     const blockers: string[] = [];
 
     if (serverVersion === 'unknown') {
@@ -2427,9 +2427,9 @@ export class ActualConnector implements BudgetLedger {
     // Path traversal sequences (..) are handled by the resolve guard below.
     const safeName = key.replace(/[^a-zA-Z0-9._-]/g, '_');
     const resolved = resolve(this.baseCacheDir, safeName);
-    // Guard against path traversal — the resolved path must stay within baseCacheDir
-    const baseResolved = resolve(this.baseCacheDir) + '/';
-    if (!resolved.startsWith(baseResolved)) {
+    // The sanitized key must resolve to a direct child, never the base or its parent.
+    const baseResolved = resolve(this.baseCacheDir);
+    if (resolved === baseResolved || dirname(resolved) !== baseResolved) {
       throw new Error(`Cache path traversal blocked for key "${key}"`);
     }
     mkdirSync(resolved, { recursive: true, mode: 0o700 });

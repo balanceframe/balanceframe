@@ -196,7 +196,11 @@ describe('generated release deployment assets', () => {
     assert.equal(mount.type, 'bind');
     assert.equal(mount.source, join(repository, 'operator', 'merchant.json'));
     assert.equal(mount.read_only, true);
-    assert.equal(mount.bind?.create_host_path, false);
+    assert.match(readFileSync(join(release, 'compose.research.yaml'), 'utf8'),
+      /^\s+create_host_path: false\s*$/m, 'the released source explicitly disables host-path creation');
+    assert.ok(mount.bind, 'the explicit bind policy survives rendering');
+    assert.ok(mount.bind.create_host_path === false || !Object.hasOwn(mount.bind, 'create_host_path'),
+      'the bind disables host-path creation, including renderers that omit false');
 
     const missingInputs = render(['compose.yaml', 'compose.research.yaml'], { providerInputs: false });
     assert.notEqual(missingInputs.status, 0, 'research remains opt-in and requires its operator inputs');

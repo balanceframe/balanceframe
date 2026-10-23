@@ -21,6 +21,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { dirname, resolve } from 'node:path';
 import { ActualConnector } from '../src/connector';
 import { NullCredentialStore } from '../src/credentials';
 import { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from '../src/types';
@@ -1330,10 +1331,12 @@ describe('ActualConnector', () => {
   });
 
   // ==========================================================================
+  // File-backed suites register only on supported POSIX hosts. Windows refusal
+  // and the portable environment store run in credentials-platform.test.ts.
   // 9. Regression: EncryptedCredentialStore restart-safe decrypt
   // ==========================================================================
 
-  describe('restart-safe decrypt (master key persistence)', () => {
+  if (process.platform !== 'win32') describe('POSIX restart-safe decrypt (master key persistence)', () => {
     it('should derive same key when loading with stored master.key across instances', async () => {
       const tmpDir = '/tmp/bf-test-creds-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
@@ -1614,8 +1617,10 @@ describe('ActualConnector', () => {
         }
       ).caches;
 
+      expect(caches.size).toBe(2);
       for (const [, cache] of caches) {
-        expect(cache.cacheDir.startsWith(base)).toBe(true);
+        expect(cache.cacheDir).not.toBe(resolve(base));
+        expect(dirname(cache.cacheDir)).toBe(resolve(base));
       }
 
       await localConnector.disconnect();
@@ -1722,6 +1727,68 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('compatibility range enforcement', () => {
+    it('reports healthy synchronization for Actual 26.10 with the default range', async () => {
+      mockClient.getServerVersion = vi.fn().mockResolvedValue({ version: '26.10.0' });
+      mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
+      mockClient.getAccounts = vi.fn().mockResolvedValue(mockAccounts);
+
+      await connector.connect({ serverUrl: 'http://compat-current:5006', secretKey: 'test' });
+      await connector.selectBudget('budget_1');
+      try {
+        const result = await connector.synchronize();
+
+        expect(result.health.compatibility).toEqual({
+          supported: true,
+          serverVersion: '26.10.0',
+          supportedVersion: '26.10.0',
+          blockers: [],
+        });
+        expect(result.health.state).toBe('healthy');
+        expect(result.health.incidents).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'INCOMPATIBLE_VERSION' })]),
+        );
+      } finally {
+        await connector.disconnect();
+      }
+    });
+
+    it('rejects versions newer than Actual 26.10 with the default range', async () => {
+      mockClient.getServerVersion = vi.fn().mockResolvedValue({ version: '26.11.0' });
+      await connector.connect({ serverUrl: 'http://compat-future:5006', secretKey: 'test' });
+      try {
+        const compatibility = await connector.getCompatibility();
+
+        expect(compatibility.supported).toBe(false);
+        expect(compatibility.blockers).toEqual([
+          'Server version 26.11.0 exceeds maximum supported version 26.10.0',
+        ]);
+      } finally {
+        await connector.disconnect();
+      }
+    });
+
+    it('preserves an explicitly configured ceiling below Actual 26.10', async () => {
+      const rangeConnector = new ActualConnector({
+        client: createMockClient({
+          getServerVersion: vi.fn().mockResolvedValue({ version: '26.10.0' }),
+        }),
+        credentialStore: new NullCredentialStore(),
+        compatibilityRange: { min: '24.0.0', max: '26.7.0' },
+      });
+      await rangeConnector.connect({ serverUrl: 'http://compat-explicit:5006', secretKey: 'test' });
+      try {
+        const compatibility = await rangeConnector.getCompatibility();
+
+        expect(compatibility.supported).toBe(false);
+        expect(compatibility.supportedVersion).toBe('26.7.0');
+        expect(compatibility.blockers).toEqual([
+          'Server version 26.10.0 exceeds maximum supported version 26.7.0',
+        ]);
+      } finally {
+        await rangeConnector.disconnect();
+      }
+    });
+
     it('should reject server version below min range', async () => {
       const rangeConnector = new ActualConnector({
         client: createMockClient({
@@ -1784,7 +1851,7 @@ describe('ActualConnector', () => {
   // 15. Regression: Tampered URL detection via AAD binding
   // ==========================================================================
 
-  describe('tampered URL detection', () => {
+  if (process.platform !== 'win32') describe('POSIX tampered URL detection', () => {
     it('should detect tampered serverUrl via GCM auth failure', async () => {
       const tmpDir = '/tmp/bf-test-tamper-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
@@ -1854,7 +1921,7 @@ describe('ActualConnector', () => {
   // 16. Regression: Permissions and atomic writes
   // ==========================================================================
 
-  describe('permissions and atomic writes', () => {
+  if (process.platform !== 'win32') describe('POSIX permissions and atomic writes', () => {
     it('should write credential file with restrictive permissions (0o600)', async () => {
       const tmpDir = '/tmp/bf-test-perms-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
@@ -1955,7 +2022,7 @@ describe('ActualConnector', () => {
   // 17. Regression: Rotation failure protection
   // ==========================================================================
 
-  describe('rotation consistency', () => {
+  if (process.platform !== 'win32') describe('POSIX rotation consistency', () => {
     it('should atomically replace old credentials with new', async () => {
       const tmpDir = '/tmp/bf-test-rotate-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
@@ -2036,7 +2103,7 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('env/file separation', () => {
-    it('should not read environment variables in EncryptedCredentialStore', async () => {
+    if (process.platform !== 'win32') it('POSIX EncryptedCredentialStore ignores environment credentials', async () => {
       const tmpDir = '/tmp/bf-test-envsep-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
       const { rmSync } = await import('node:fs');
@@ -2114,7 +2181,7 @@ describe('ActualConnector', () => {
   // 19. Regression: Deletion truthfulness
   // ==========================================================================
 
-  describe('deletion truthfulness', () => {
+  if (process.platform !== 'win32') describe('POSIX deletion truthfulness', () => {
     it('should remove all credential files on delete', async () => {
       const tmpDir = '/tmp/bf-test-delete-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
