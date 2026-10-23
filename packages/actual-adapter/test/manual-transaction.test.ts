@@ -324,6 +324,58 @@ function importedTransaction(
 // ---------------------------------------------------------------------------
 
 describe('ActualConnector.createManualTransaction', () => {
+  it.each(['parent', 'nested child'] as const)(
+    'retains %s Actual errors as incomplete transaction evidence after a complete read',
+    async (location) => {
+      const child = {
+        id: 'manual-error-child', account: ACCOUNT_ID, date: '2026-09-25',
+        amount: -12500, category: GROCERIES_ID, parent_id: 'manual-error-parent',
+        is_child: true, is_parent: false,
+        error: { type: 'SplitTransactionError', version: 1, difference: 0 },
+      } as TransactionEntity;
+      const parent = {
+        id: 'manual-error-parent', account: ACCOUNT_ID, date: '2026-09-25',
+        amount: -12500,
+        ...(location === 'parent'
+          ? { category: GROCERIES_ID, error: child.error }
+          : { is_parent: true, subtransactions: [child], error: null }),
+      } as TransactionEntity;
+      const harness = createHarness({ transactions: [parent] });
+      await selectTestBudget(harness);
+
+      const result = await harness.connector.synchronize({ refresh: false });
+
+      expect(result.snapshot.transactions).toMatchObject([{ id: parent.id }]);
+      if (location === 'nested child')
+        expect(result.snapshot.transactions[0]?.subtransactions).toMatchObject([{ id: child.id }]);
+      expect(result.financialSnapshot.coverage.transactions).toBe('partial');
+    },
+  );
+
+  it.each(['valid', 'tombstoned error', 'closed account error'] as const)(
+    'keeps complete transaction coverage for %s evidence',
+    async (kind) => {
+      const row = {
+        id: 'coverage-control', account: kind === 'closed account error' ? 'closed' : ACCOUNT_ID,
+        date: '2026-09-25', amount: -12500, category: GROCERIES_ID,
+        ...(kind === 'valid' ? { error: null } : {
+          error: { type: 'SplitTransactionError', version: 1, difference: 0 },
+        }),
+        ...(kind === 'tombstoned error' ? { tombstone: true } : {}),
+      } as TransactionEntity;
+      const harness = createHarness({
+        accounts: [mockAccount, { ...mockAccount, id: 'closed', closed: true }],
+        transactions: [row],
+      });
+      await selectTestBudget(harness);
+
+      const result = await harness.connector.synchronize({ refresh: false });
+
+      expect(result.financialSnapshot.coverage.transactions)
+        .toBe(kind === 'closed account error' ? 'empty' : 'complete');
+    },
+  );
+
   it('writes a single manual transaction with the stable parent ID and verifies exact fields', async () => {
     const harness = createHarness();
     await selectTestBudget(harness);
