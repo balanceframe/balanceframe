@@ -3,6 +3,7 @@
     title="Data Quality"
     :loading="loading"
     :error="error"
+    @retry="load"
     :freshness="freshness"
     :insufficient-data="!loading && !error && !hasData"
   >
@@ -58,6 +59,7 @@
 </template>
 
 <script setup lang="ts">
+import { analysisError } from '../utils/analysis-error';
 import { nullableNormalizedScorePercent } from '../utils/financial-display';
 
 definePageMeta({ layout: 'default' });
@@ -105,7 +107,7 @@ const normalizeDimension = (dimension: QualityDimensionApi): QualityDimension =>
 });
 
 const loading = ref(true);
-const error = ref<{ code: string; message: string } | null>(null);
+const error = ref<{ code: string; message: string; retryable?: boolean } | null>(null);
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const overallScore = ref<number | null>(null);
 const dimensions = ref<QualityDimension[]>([]);
@@ -129,7 +131,9 @@ const dimensionRows = computed(() =>
   })),
 );
 
-onMounted(async () => {
+async function load() {
+  loading.value = true;
+  error.value = null;
   try {
     const res = await $fetch<Envelope<DataQualityResult>>('/api/data-quality');
     if (res.status === 'ok' && res.result) {
@@ -140,13 +144,16 @@ onMounted(async () => {
     } else {
       error.value = {
         code: res.error?.code ?? 'UNKNOWN',
+        retryable: res.error?.retryable ?? false,
         message: res.error?.message ?? 'Data quality analysis returned an error.',
       };
     }
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: String(e) };
+    error.value = analysisError(e);
   } finally {
     loading.value = false;
   }
-});
+}
+
+onMounted(load);
 </script>

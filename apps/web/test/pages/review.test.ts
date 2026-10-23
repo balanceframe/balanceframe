@@ -209,6 +209,7 @@ function requestUrl(input: Parameters<typeof fetch>[0]): string {
 }
 
 const stubs = {
+  NuxtLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
   UContainer: { name: 'UContainer', template: '<section><slot /></section>' },
   UButton: {
     name: 'UButton',
@@ -443,6 +444,33 @@ describe('review page recovery behavior', () => {
       credentials: 'same-origin',
     });
     expect(correctionModal(page).props('categories')).toEqual(categoryCatalog);
+  });
+
+  it.each(['SPACE_SELECTION_REQUIRED', 'LOAD_ERROR'])('offers Spaces recovery for %s without claiming a failed queue is empty', async (code) => {
+    composableDoubles.adapter.state.items = [];
+    composableDoubles.adapter.state.currentItem = null;
+    composableDoubles.adapter.state.error = {
+      code, message: 'The selected space is unavailable.', retryable: true,
+    };
+    const page = await mountPage();
+    expect(page.text()).toContain('The selected space is unavailable.');
+    expect(page.text()).not.toContain('No items to review.');
+    expect(page.get('a[href="/spaces"]').text()).toBe('Open Spaces');
+  });
+
+  it('keeps retry available for a failed queue without showing the empty state', async () => {
+    composableDoubles.adapter.state.items = [];
+    composableDoubles.adapter.state.currentItem = null;
+    composableDoubles.adapter.state.error = {
+      code: 'FETCH_ERROR', message: 'Review is unavailable.', retryable: true,
+    };
+    const page = await mountPage();
+    expect(page.text()).not.toContain('No items to review.');
+    const initialLoads = vi.mocked(composableDoubles.adapter.loadNextPage).mock.calls.length;
+    const retry = page.findAll('button').find((button) => button.text() === 'Retry');
+    expect(retry).toBeDefined();
+    await retry!.trigger('click');
+    expect(composableDoubles.adapter.loadNextPage).toHaveBeenCalledTimes(initialLoads + 1);
   });
 
   it('keeps asynchronous Sync notifications within the app toast limit', async () => {
@@ -717,6 +745,26 @@ describe('review page recovery behavior', () => {
     await connectionAction.onClick(new MouseEvent('click'));
     expect(navigateToSpy).toHaveBeenCalledOnce();
     expect(navigateToSpy).toHaveBeenCalledWith('/connection');
+  });
+
+  it('explains a code-only demo Sync denial without refreshing the queue or offering connection setup', async () => {
+    const page = await mountPage();
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { code: 'DEMO_OPERATION_DISABLED' },
+    }), { status: 403, headers: { 'content-type': 'application/json' } }));
+
+    await syncButton(page).trigger('click');
+    await flushPromises();
+
+    expect(toasts.value).toHaveLength(1);
+    expect(toasts.value[0]).toMatchObject({
+      title: 'Sync failed',
+      description: 'Sync is unavailable for the active demo scenario (DEMO_OPERATION_DISABLED).',
+      color: 'error',
+    });
+    expect(toasts.value[0]?.actions).toBeUndefined();
+    expect(composableDoubles.adapter.refresh).not.toHaveBeenCalled();
+    expect(navigateToSpy).not.toHaveBeenCalled();
   });
 
   it('does not offer connection setup for other Sync failures', async () => {

@@ -268,7 +268,7 @@ export type ScenarioEntry =
   | { readonly kind: 'purchase'; readonly input: LiquidityPurchaseIntent }
   | { readonly kind: 'session'; readonly sessionKey: string }
   | { readonly kind: 'completion'; readonly sessionKey: string; readonly completionKey: string }
-  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/evidence' | '/' };
+  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/review#transaction-evidence' | '/' };
 
 export interface MaterializedScenario {
   readonly id: ScenarioId;
@@ -1687,7 +1687,7 @@ function buildEvidenceScenario(context: BuildContext, id: ScenarioId): MutableSc
   }
   scenario.personas = [evidencePersona(scenario, 'owner'), evidencePersona(scenario, 'coapprover'),
     evidencePersona(scenario, 'approver'), restrictedPersona()];
-  scenario.entry = { kind: 'page', path: '/evidence' };
+  scenario.entry = { kind: 'page', path: '/review#transaction-evidence' };
   return scenario;
 }
 
@@ -2216,7 +2216,7 @@ function checkReferences(scenario: MutableScenario): void {
     )
       throw new Error('Entry references unknown account');
   } else if (scenario.entry.kind === 'page') {
-    if (!['/spaces', '/review', '/rules', '/evidence', '/'].includes(scenario.entry.path))
+    if (!['/spaces', '/review', '/rules', '/review#transaction-evidence', '/'].includes(scenario.entry.path))
       throw new Error('Page entry must use a registered normal-screen path');
   } else {
     if (!hasOwn(scenario.sessions, scenario.entry.sessionKey))

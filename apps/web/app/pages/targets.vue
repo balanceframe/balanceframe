@@ -1,5 +1,5 @@
 <template>
-  <AnalysisPage title="Targets &amp; Sinking Funds" :loading="loading" :error="error">
+  <AnalysisPage title="Targets &amp; Sinking Funds" :loading="loading" :error="error" @retry="load">
     <template #content>
       <!-- No-config state -->
       <div v-if="!hasData" class="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">
@@ -22,7 +22,7 @@
       </div>
       <div v-if="sinkingData && sinkingRows.length">
         <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Sinking Funds</h3>
-        <AnalysisTable :columns="targetColumns" :rows="sinkingRows" />
+        <AnalysisTable :columns="sinkingColumns" :rows="sinkingRows" />
       </div>
       <div
         v-if="sinkingData && !sinkingRows.length"
@@ -35,30 +35,31 @@
 </template>
 
 <script setup lang="ts">
-import type { Amount } from '../components/types';
+import type { TargetHealthResult, SinkingFundHealthResult } from '@balanceframe/application';
+import type { Envelope } from '../components/types';
+import { analysisError } from '../utils/analysis-error';
+import { nullableNormalizedScorePercent } from '../utils/financial-display';
 
 definePageMeta({ layout: 'default' });
 
 const loading = ref(true);
-const error = ref<{ code: string; message: string } | null>(null);
-const targetData = ref<{ categories: CategoryHealth[]; overallLabel: string } | null>(null);
-const sinkingData = ref<{ sinkingFunds: CategoryHealth[]; fullyFunded: number } | null>(null);
-
-interface CategoryHealth {
-  categoryId: string;
-  categoryName: string;
-  progress: number;
-  target: Amount;
-  current: Amount;
-  status: string;
-}
+const error = ref<{ code: string; message: string; retryable?: boolean } | null>(null);
+const targetData = ref<TargetHealthResult | null>(null);
+const sinkingData = ref<SinkingFundHealthResult | null>(null);
 
 const targetColumns = [
   { key: 'categoryName', label: 'Category' },
-  { key: 'target', label: 'Target', type: 'amount' as const },
-  { key: 'current', label: 'Current', type: 'amount' as const },
-  { key: 'progress', label: 'Progress' },
-  { key: 'status', label: 'Status', type: 'badge' as const },
+  { key: 'budgeted', label: 'Budgeted', type: 'amount' as const },
+  { key: 'spent', label: 'Spent', type: 'amount' as const },
+  { key: 'remaining', label: 'Remaining', type: 'amount' as const },
+  { key: 'healthLabel', label: 'Status', type: 'badge' as const },
+];
+const sinkingColumns = [
+  { key: 'categoryName', label: 'Category' },
+  { key: 'targetAmount', label: 'Target', type: 'amount' as const },
+  { key: 'remaining', label: 'Remaining', type: 'amount' as const },
+  { key: 'targetProgress', label: 'Progress' },
+  { key: 'healthLabel', label: 'Status', type: 'badge' as const },
 ];
 
 const hasData = computed(
@@ -68,34 +69,44 @@ const hasData = computed(
 );
 
 const targetRows = computed(() =>
-  (targetData.value?.categories ?? []).map((c) => ({
-    ...c,
-    progress: `${Math.round(c.progress * 100)}%`,
-  })),
+  (targetData.value?.categories ?? []).map((category) => ({ ...category })),
 );
 const sinkingRows = computed(() =>
-  (sinkingData.value?.sinkingFunds ?? []).map((c) => ({
-    ...c,
-    progress: `${Math.round(c.progress * 100)}%`,
-  })),
+  (sinkingData.value?.sinkingFunds ?? []).map((category) => {
+    const progress = nullableNormalizedScorePercent(category.targetProgress);
+    return {
+      ...category,
+      targetAmount: category.targetAmount ?? 'Unknown',
+      targetProgress: progress === null ? 'Unknown' : `${progress}%`,
+    };
+  }),
 );
 
-onMounted(async () => {
+async function load() {
+  loading.value = true;
+  error.value = null;
   try {
     const [tRes, sRes] = await Promise.all([
-      $fetch<{ status: string; result: { categories: CategoryHealth[]; overallLabel: string } }>(
-        '/api/targets/health',
-      ),
-      $fetch<{ status: string; result: { sinkingFunds: CategoryHealth[]; fullyFunded: number } }>(
-        '/api/sinking-fund/health',
-      ),
+      $fetch<Envelope<TargetHealthResult>>('/api/targets/health'),
+      $fetch<Envelope<SinkingFundHealthResult>>('/api/sinking-fund/health'),
     ]);
-    if (tRes.status === 'ok') targetData.value = tRes.result;
-    if (sRes.status === 'ok') sinkingData.value = sRes.result;
+    const failure = [tRes, sRes].find((response) => response.status !== 'ok' || !response.result);
+    if (failure) {
+      error.value = failure.error ?? {
+        code: 'TARGETS_FAILED',
+        message: 'Target health returned an error.',
+        retryable: false,
+      };
+      return;
+    }
+    targetData.value = tRes.result;
+    sinkingData.value = sRes.result;
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: String(e) };
+    error.value = analysisError(e);
   } finally {
     loading.value = false;
   }
-});
+}
+
+onMounted(load);
 </script>

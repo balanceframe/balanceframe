@@ -62,6 +62,10 @@
           size="sm"
           @click="load"
         />
+        <NuxtLink
+          to="/spaces"
+          class="ml-3 underline focus-visible:outline focus-visible:outline-2"
+        >Open Spaces</NuxtLink>
       </template>
     </UAlert>
 
@@ -84,7 +88,7 @@
     </details>
 
     <!-- Empty state -->
-    <UCard v-if="!adapter.state.currentItem && !adapter.loading" class="text-center py-8">
+    <UCard v-if="!adapter.state.currentItem && !adapter.loading && !adapter.state.error" class="text-center py-8">
       <p class="text-gray-500 dark:text-gray-400 text-lg">No items to review.</p>
       <UButton
         v-if="adapter.state.hasMore"
@@ -602,7 +606,9 @@ async function handleSync() {
       const error = data.error;
       toast.add({
         title: 'Sync failed',
-        description: error?.message ?? 'Unknown error',
+        description: error?.code === 'DEMO_OPERATION_DISABLED'
+          ? 'Sync is unavailable for the active demo scenario (DEMO_OPERATION_DISABLED).'
+          : error?.message ?? 'Unknown error',
         color: 'error',
         duration: 10000,
         ...(error?.code === 'not_connected'

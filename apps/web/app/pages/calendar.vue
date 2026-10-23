@@ -3,6 +3,7 @@
     title="Financial Calendar"
     :loading="loading"
     :error="error"
+    @retry="load"
     :freshness="freshness"
     :insufficient-data="!loading && !error && !hasData"
   >
@@ -44,6 +45,7 @@
 </template>
 
 <script setup lang="ts">
+import { analysisError } from '../utils/analysis-error';
 import type { Amount } from '../components/types';
 
 definePageMeta({ layout: 'default' });
@@ -67,7 +69,7 @@ interface BillCalendarEntry {
 }
 
 const loading = ref(true);
-const error = ref<{ code: string; message: string } | null>(null);
+const error = ref<{ code: string; message: string; retryable?: boolean } | null>(null);
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const entries = ref<BillCalendarEntry[]>([]);
 const totalUnpaid = ref<Amount | null>(null);
@@ -98,7 +100,9 @@ const entryRows = computed(() =>
   })),
 );
 
-onMounted(async () => {
+async function load() {
+  loading.value = true;
+  error.value = null;
   try {
     const res = await $fetch<
       Envelope<{
@@ -115,13 +119,16 @@ onMounted(async () => {
     } else {
       error.value = {
         code: res.error?.code ?? 'UNKNOWN',
+        retryable: res.error?.retryable ?? false,
         message: res.error?.message ?? 'Calendar analysis returned an error.',
       };
     }
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: String(e) };
+    error.value = analysisError(e);
   } finally {
     loading.value = false;
   }
-});
+}
+
+onMounted(load);
 </script>

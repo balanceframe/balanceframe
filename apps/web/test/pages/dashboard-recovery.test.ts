@@ -172,6 +172,30 @@ describe('Dashboard recovery', () => {
     mountedWrappers.splice(0).forEach((wrapper) => wrapper.unmount());
   });
 
+  it('omits unknown category day counts while retaining zero and positive days', async () => {
+    fetchMock.mockResolvedValue({
+      ...attentionResponse(),
+      result: {
+        ...attentionResult,
+        categoryRisks: [null, 0, 5].map((daysRemaining, index) => ({
+          categoryId: `category-${index}`,
+          categoryName: `Category ${index}`,
+          risk: 'medium',
+          reasonCodes: [],
+          remainingBudget: { minorUnits: '100', currency: 'USD' },
+          daysRemaining,
+        })),
+      },
+    });
+
+    const wrapper = await mountAfterAttentionLoad();
+    const risks = wrapper.get('[aria-label="Category Risks"]');
+    expect(risks.text()).toContain('Category 0');
+    expect(risks.findAll('p').map((paragraph) => paragraph.text())
+      .filter((text) => text.includes('days remaining')))
+      .toEqual(['0 days remaining', '5 days remaining']);
+  });
+
   it('renders structured not_connected errors with the connection recovery link', async () => {
     fetchMock.mockRejectedValue({
       data: {

@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { shallowMount, flushPromises } from '@vue/test-utils';
 import SavedViewPicker from '../../app/components/SavedViewPicker.vue';
+import type { TargetHealthResult, SinkingFundHealthResult, CashFlowProjectionResult } from '@balanceframe/application';
 
 // ---------------------------------------------------------------------------
 // Global fetch mock
@@ -112,72 +113,36 @@ const cashFlowStubs = { ...stubs };
 
 const projectionResult = {
   projectionMonths: 3,
-  projections: [
+  monthlyProjections: [
     {
       month: '2026-08',
-      income: { minorUnits: '500000', currency: 'USD' },
-      expenses: { minorUnits: '350000', currency: 'USD' },
-      netFlow: { minorUnits: '150000', currency: 'USD' },
+      projectedIncome: { minorUnits: '500000', currency: 'USD' },
+      projectedExpenses: { minorUnits: '350000', currency: 'USD' },
+      netChange: { minorUnits: '150000', currency: 'USD' },
       endingBalance: { minorUnits: '150000', currency: 'USD' },
+      scheduledIncomeCount: 1,
+      scheduledExpenseCount: 1,
     },
     {
       month: '2026-09',
-      income: { minorUnits: '500000', currency: 'USD' },
-      expenses: { minorUnits: '400000', currency: 'USD' },
-      netFlow: { minorUnits: '100000', currency: 'USD' },
+      projectedIncome: { minorUnits: '500000', currency: 'USD' },
+      projectedExpenses: { minorUnits: '400000', currency: 'USD' },
+      netChange: { minorUnits: '100000', currency: 'USD' },
       endingBalance: { minorUnits: '250000', currency: 'USD' },
+      scheduledIncomeCount: 1,
+      scheduledExpenseCount: 1,
     },
   ],
-  summary: {
-    netProjection: { minorUnits: '250000', currency: 'USD' },
-    minBalance: { minorUnits: '150000', currency: 'USD' },
-    maxBalance: { minorUnits: '250000', currency: 'USD' },
-  },
-  assumptions: {
-    basedOn: 'scheduled_transactions',
-    inflationRate: null,
-    growthRate: null,
-    note: 'Projections use only confirmed scheduled transactions.',
-  },
-  scope: {
-    monthsProjected: 3,
-    accountsIncluded: ['acct_checking'],
-    categoriesIncluded: ['cat_salary', 'cat_rent', 'cat_food'],
-  },
-  envelopeAvailability: {
-    available: true,
-    envelopeCount: 5,
-    totalBudgeted: { minorUnits: '800000', currency: 'USD' },
-    totalSpent: { minorUnits: '450000', currency: 'USD' },
-  },
   sufficientData: true,
   dataWarning: null,
-};
+} satisfies CashFlowProjectionResult;
 
 const insufficientProjectionResult = {
-  projectionMonths: 0,
-  projections: [],
-  summary: {
-    netProjection: { minorUnits: '0', currency: 'USD' },
-    minBalance: { minorUnits: '0', currency: 'USD' },
-    maxBalance: { minorUnits: '0', currency: 'USD' },
-  },
-  assumptions: {
-    basedOn: 'scheduled_transactions',
-    inflationRate: null,
-    growthRate: null,
-    note: 'Insufficient data.',
-  },
-  scope: { monthsProjected: 0, accountsIncluded: [], categoriesIncluded: [] },
-  envelopeAvailability: {
-    available: false,
-    envelopeCount: 0,
-    totalBudgeted: { minorUnits: '0', currency: 'USD' },
-    totalSpent: { minorUnits: '0', currency: 'USD' },
-  },
+  projectionMonths: 3,
+  monthlyProjections: [],
   sufficientData: false,
   dataWarning: 'Not enough transaction history to produce reliable projections.',
-};
+} satisfies CashFlowProjectionResult;
 
 async function mountCashFlowAndProject(resultMock: unknown) {
   mockFetch.mockResolvedValue(okEnvelope(resultMock));
@@ -217,22 +182,19 @@ describe('Cash Flow page', () => {
     expect(wrapper.find('[data-testid="analysis-table"]').exists()).toBe(true);
   });
 
-  it('shows assumptions section separate from projection', async () => {
+  it('renders server monthly income, expenses, net change and ending balance', async () => {
     const wrapper = await mountCashFlowAndProject(projectionResult);
-    expect(wrapper.text()).toContain('Assumptions');
-    expect(wrapper.text()).toContain('scheduled_transactions');
+    const table = wrapper.get('[data-testid="analysis-table"]');
+    expect(table.findAll('tr')).toHaveLength(2);
+    for (const amount of ['500000', '350000', '150000', '250000'])
+      expect(table.text()).toContain(amount);
   });
 
-  it('shows scope information', async () => {
+  it('does not invent a data warning or unsupported metadata for sufficient projections', async () => {
     const wrapper = await mountCashFlowAndProject(projectionResult);
-    expect(wrapper.text()).toContain('Scope');
-    expect(wrapper.text()).toContain('acct_checking');
-  });
-
-  it('separates envelope availability from projection', async () => {
-    const wrapper = await mountCashFlowAndProject(projectionResult);
-    expect(wrapper.text()).toContain('Envelope Availability');
-    expect(wrapper.text()).toContain('5');
+    expect(wrapper.text()).not.toContain('Warning');
+    expect(wrapper.text()).not.toContain('Assumptions');
+    expect(wrapper.text()).not.toContain('Envelope Availability');
   });
 
   it('shows insufficient data warning', async () => {
@@ -269,42 +231,47 @@ const healthyTargetResult = {
     {
       categoryId: 'cat_groceries',
       categoryName: 'Groceries',
-      target: { minorUnits: '400000', currency: 'USD' },
-      current: { minorUnits: '200000', currency: 'USD' },
-      progress: 0.5,
-      status: 'healthy',
+      budgeted: { minorUnits: '400000', currency: 'USD' },
+      spent: { minorUnits: '200000', currency: 'USD' },
+      remaining: { minorUnits: '200000', currency: 'USD' },
+      healthLabel: 'healthy',
+      isSinkingFund: false,
+      targetAmount: null,
+      targetProgress: null,
     },
   ],
   overallLabel: 'healthy',
-};
+  healthyCount: 1,
+  atRiskCount: 0,
+  sinkingFundCount: 0,
+} satisfies TargetHealthResult;
 
 const atRiskTargetResult = {
-  categories: [
-    {
-      categoryId: 'cat_groceries',
-      categoryName: 'Groceries',
-      target: { minorUnits: '400000', currency: 'USD' },
-      current: { minorUnits: '380000', currency: 'USD' },
-      progress: 0.95,
-      status: 'at_risk',
-    },
-  ],
+  ...healthyTargetResult,
+  categories: [{ ...healthyTargetResult.categories[0]!, healthLabel: 'at_risk' }],
   overallLabel: 'at_risk',
-};
+  healthyCount: 0,
+  atRiskCount: 1,
+} satisfies TargetHealthResult;
 
 const partiallyFundedSinkingResult = {
   sinkingFunds: [
     {
       categoryId: 'cat_emergency',
       categoryName: 'Emergency Fund',
-      target: { minorUnits: '1000000', currency: 'USD' },
-      current: { minorUnits: '500000', currency: 'USD' },
-      progress: 0.5,
-      status: 'at_risk',
+      budgeted: { minorUnits: '1000000', currency: 'USD' },
+      spent: { minorUnits: '500000', currency: 'USD' },
+      remaining: { minorUnits: '500000', currency: 'USD' },
+      targetAmount: { minorUnits: '1000000', currency: 'USD' },
+      targetProgress: 0.5,
+      healthLabel: 'at_risk',
+      isSinkingFund: true,
     },
   ],
-  fullyFunded: 0,
-};
+  fullyFundedCount: 0,
+  partiallyFundedCount: 1,
+  unfundedCount: 0,
+} satisfies SinkingFundHealthResult;
 
 describe('Targets page', () => {
   beforeEach(() => {

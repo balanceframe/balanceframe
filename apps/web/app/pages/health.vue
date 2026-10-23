@@ -3,6 +3,7 @@
     title="Financial Health"
     :loading="loading"
     :error="error"
+    @retry="load"
     :freshness="freshness"
     :insufficient-data="!loading && !error && !hasData"
   >
@@ -106,6 +107,7 @@
 </template>
 
 <script setup lang="ts">
+import { analysisError } from '../utils/analysis-error';
 import { normalizedScorePercent } from '../utils/financial-display';
 
 definePageMeta({ layout: 'default' });
@@ -129,7 +131,7 @@ interface HealthDimension {
 }
 
 const loading = ref(true);
-const error = ref<{ code: string; message: string } | null>(null);
+const error = ref<{ code: string; message: string; retryable?: boolean } | null>(null);
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const dimensions = ref<HealthDimension[]>([]);
 const compositeScore = ref(0);
@@ -158,7 +160,9 @@ function severityClass(severity: string): string {
   return 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400';
 }
 
-onMounted(async () => {
+async function load() {
+  loading.value = true;
+  error.value = null;
   try {
     const res = await $fetch<
       Envelope<{
@@ -177,13 +181,16 @@ onMounted(async () => {
     } else {
       error.value = {
         code: res.error?.code ?? 'UNKNOWN',
+        retryable: res.error?.retryable ?? false,
         message: res.error?.message ?? 'Health assessment returned an error.',
       };
     }
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: String(e) };
+    error.value = analysisError(e);
   } finally {
     loading.value = false;
   }
-});
+}
+
+onMounted(load);
 </script>

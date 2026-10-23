@@ -3,9 +3,12 @@
     title="Reports"
     :loading="loading"
     :error="error"
+    @retry="retryGeneration ? generate() : loadReports()"
     :freshness="freshness"
-    :insufficient-data="!loading && !error && !hasData"
   >
+    <template #error-actions>
+      <UButton class="mt-3" @click="error = null">Edit parameters</UButton>
+    </template>
     <template #content>
       <div class="space-y-6">
         <SavedViewPicker
@@ -115,6 +118,7 @@
 </template>
 
 <script setup lang="ts">
+import { analysisError } from '../utils/analysis-error';
 import type { Amount } from '../components/types';
 
 definePageMeta({ layout: 'default' });
@@ -161,6 +165,7 @@ interface SavedView {
 const loading = ref(true);
 const error = ref<{ code: string; message: string; retryable?: boolean } | null>(null);
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
+const retryGeneration = ref(false);
 const reportType = ref('');
 const monthRange = ref('');
 const reportResult = ref<ReportGenerationResult | null>(null);
@@ -309,7 +314,7 @@ async function loadViews() {
         retryable: !!res.error?.retryable,
       };
   } catch (e) {
-    viewsError.value = { code: 'FETCH_ERROR', message: String(e), retryable: true };
+    viewsError.value = analysisError(e);
   } finally {
     viewsLoading.value = false;
   }
@@ -319,6 +324,7 @@ async function generate() {
   if (!reportType.value || !monthRange.value) return;
   loading.value = true;
   error.value = null;
+  retryGeneration.value = true;
   try {
     const res = await $fetch<Envelope<ReportGenerationResult>>('/api/reports/generate', {
       query: { reportType: reportType.value, monthRange: monthRange.value },
@@ -327,16 +333,20 @@ async function generate() {
     else
       error.value = {
         code: res.error?.code ?? 'GENERATE_FAILED',
+        retryable: res.error?.retryable ?? false,
         message: res.error?.message ?? 'Report generation returned an error.',
       };
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: String(e) };
+    error.value = analysisError(e);
   } finally {
     loading.value = false;
   }
 }
 
-onMounted(async () => {
+async function loadReports() {
+  loading.value = true;
+  error.value = null;
+  retryGeneration.value = false;
   try {
     const historyRes =
       await $fetch<Envelope<{ entries: ReportHistoryEntry[]; total: number }>>(
@@ -349,14 +359,17 @@ onMounted(async () => {
     } else {
       error.value = {
         code: historyRes.error?.code ?? 'HISTORY_FAILED',
+        retryable: historyRes.error?.retryable ?? false,
         message: historyRes.error?.message ?? 'Failed to load report history.',
       };
     }
     await loadViews();
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: String(e) };
+    error.value = analysisError(e);
   } finally {
     loading.value = false;
   }
-});
+}
+
+onMounted(loadReports);
 </script>
