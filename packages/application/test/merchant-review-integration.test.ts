@@ -152,34 +152,41 @@ describe('existing Review producer → SQLite inbox integration', () => {
       });
     },
   );
-  it('persists every authorized inferred target beyond the explanation page without freshness-clock issue churn', async () => {
-    const targets = Array.from({ length: 301 }, (_, index) =>
-      transaction({ id: `tx-inferred-review-${String(index).padStart(3, '0')}` }));
-    fixture.setRows([...fixture.rows().filter((row) => row.category !== null), ...targets]);
-    fixture.grantSources();
-    const view = await fixture.service.analyze(fixture.actor, { limit: 1 });
-    expect(view.suggestions).toHaveLength(1);
-    expect(new Set(view.localReview.candidates.filter((candidate) =>
-      candidate.source === 'merchant-inferred' && candidate.proposedCategoryId === categoryId)
-      .map((candidate) => candidate.transactionId))).toEqual(new Set(targets.map((row) => row.id)));
+  describe('complete inferred Review targets', () => {
+    let targets: TransactionEntity[];
+    // Durable synthetic grant writes are setup; analysis and persistence keep their 10s limit.
+    beforeEach(() => {
+      targets = Array.from({ length: 301 }, (_, index) =>
+        transaction({ id: `tx-inferred-review-${String(index).padStart(3, '0')}` }));
+      fixture.setRows([...fixture.rows().filter((row) => row.category !== null), ...targets]);
+      fixture.grantSources();
+    }, 60_000);
 
-    const first = await syncReview();
-    const offPageId = targets.at(-1)!.id;
-    const offPage = first.rows.find((row) => row.transactionId === offPageId)!;
-    expect(offPage).toMatchObject({
-      categoryId, classifier: 'merchant',
-      evidence: { merchantProof: { transactionId: offPageId, accountId, payeeId, categoryId, tier: 'inferred' } },
+    it('persists every authorized inferred target beyond the explanation page without freshness-clock issue churn', async () => {
+      const view = await fixture.service.analyze(fixture.actor, { limit: 1 });
+      expect(view.suggestions).toHaveLength(1);
+      expect(new Set(view.localReview.candidates.filter((candidate) =>
+        candidate.source === 'merchant-inferred' && candidate.proposedCategoryId === categoryId)
+        .map((candidate) => candidate.transactionId))).toEqual(new Set(targets.map((row) => row.id)));
+
+      const first = await syncReview();
+      const offPageId = targets.at(-1)!.id;
+      const offPage = first.rows.find((row) => row.transactionId === offPageId)!;
+      expect(offPage).toMatchObject({
+        categoryId, classifier: 'merchant',
+        evidence: { merchantProof: { transactionId: offPageId, accountId, payeeId, categoryId, tier: 'inferred' } },
+      });
+      expect(offPage.evidence.merchantEvidence).toBeUndefined();
+      fixture.setClock('2026-10-04T12:01:00.000Z');
+      vi.setSystemTime(fixture.clock());
+      const refreshed = await syncReview();
+      const sameIssue = refreshed.rows.find((row) => row.transactionId === offPageId)!;
+      expect(sameIssue.id).toBe(offPage.id);
+      expect(sameIssue.transactionVersion).toBe(offPage.transactionVersion);
+      expect(sameIssue.evidence.sourceRevision).toBe(offPage.evidence.sourceRevision);
+      expect(new Set(refreshed.rows.filter((row) => row.status !== 'superseded').map((row) => row.transactionId)))
+        .toEqual(new Set(targets.map((row) => row.id)));
     });
-    expect(offPage.evidence.merchantEvidence).toBeUndefined();
-    fixture.setClock('2026-10-04T12:01:00.000Z');
-    vi.setSystemTime(fixture.clock());
-    const refreshed = await syncReview();
-    const sameIssue = refreshed.rows.find((row) => row.transactionId === offPageId)!;
-    expect(sameIssue.id).toBe(offPage.id);
-    expect(sameIssue.transactionVersion).toBe(offPage.transactionVersion);
-    expect(sameIssue.evidence.sourceRevision).toBe(offPage.evidence.sourceRevision);
-    expect(new Set(refreshed.rows.filter((row) => row.status !== 'superseded').map((row) => row.transactionId)))
-      .toEqual(new Set(targets.map((row) => row.id)));
   });
 
   it('admits every off-page inferred subject independently and does not gate ordinary native targets on merchant evidence rights', async () => {

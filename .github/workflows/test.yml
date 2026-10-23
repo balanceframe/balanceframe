@@ -50,6 +50,9 @@ jobs:
       - name: Validate offline deployment and release contracts
         run: nix develop .#release --command bash -c 'COMPOSE_BIN="$(command -v docker-compose)" just compose-validate'
 
+      - name: Test deployment artifact and release contracts
+        run: nix develop .#release --command bash -c 'COMPOSE_BIN="$(command -v docker-compose)" node --test --test-concurrency=1 tests/deployment/*.test.mjs'
+
       - name: Test merchant measurement contracts
         run: taskset -c 0,1 nix develop --command node --test --test-concurrency=1 scripts/merchant-intelligence/current.test.mjs scripts/merchant-intelligence/review.test.mjs scripts/merchant-intelligence/review-browser.test.mjs scripts/merchant-intelligence/review-collector.test.mjs scripts/merchant-intelligence/review-cleanup.test.mjs
 

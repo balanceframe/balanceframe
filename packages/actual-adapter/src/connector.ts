@@ -185,6 +185,13 @@ function hasNonBlankString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function hasActualTransactionError(transaction: TransactionEntity): boolean {
+  return !transaction.tombstone && (
+    transaction.error != null ||
+    transaction.subtransactions?.some(hasActualTransactionError) === true
+  );
+}
+
 const MANUAL_I64_MIN = -(1n << 63n);
 const MANUAL_I64_MAX = (1n << 63n) - 1n;
 
@@ -2406,7 +2413,7 @@ export class ActualConnector implements BudgetLedger {
   async getCompatibility(): Promise<CompatibilityResult> {
     const serverVersion = this._serverVersion ?? 'unknown';
     const minVersion = this.compatibilityRange?.min ?? '24.0.0';
-    const maxVersion = this.compatibilityRange?.max ?? '26.7.0';
+    const maxVersion = this.compatibilityRange?.max ?? '26.10.0';
     const blockers: string[] = [];
 
     if (serverVersion === 'unknown') {
@@ -2755,7 +2762,8 @@ export class ActualConnector implements BudgetLedger {
       const readableAccounts = activeTransactionReads.filter(({ read }) => read.available).length;
       if (readableAccounts === 0) {
         transactionCoverage = 'unknown';
-      } else if (readableAccounts < activeAccounts.length) {
+      } else if (readableAccounts < activeAccounts.length ||
+          allRawTransactions.some(hasActualTransactionError)) {
         transactionCoverage = 'partial';
       } else {
         transactionCoverage = allRawTransactions.length === 0 ? 'empty' : 'complete';

@@ -1804,6 +1804,68 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('compatibility range enforcement', () => {
+    it('reports healthy synchronization for Actual 26.10 with the default range', async () => {
+      mockClient.getServerVersion = vi.fn().mockResolvedValue({ version: '26.10.0' });
+      mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
+      mockClient.getAccounts = vi.fn().mockResolvedValue(mockAccounts);
+
+      await connector.connect({ serverUrl: 'http://compat-current:5006', secretKey: 'test' });
+      await connector.selectBudget('budget_1');
+      try {
+        const result = await connector.synchronize();
+
+        expect(result.health.compatibility).toEqual({
+          supported: true,
+          serverVersion: '26.10.0',
+          supportedVersion: '26.10.0',
+          blockers: [],
+        });
+        expect(result.health.state).toBe('healthy');
+        expect(result.health.incidents).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'INCOMPATIBLE_VERSION' })]),
+        );
+      } finally {
+        await connector.disconnect();
+      }
+    });
+
+    it('rejects versions newer than Actual 26.10 with the default range', async () => {
+      mockClient.getServerVersion = vi.fn().mockResolvedValue({ version: '26.11.0' });
+      await connector.connect({ serverUrl: 'http://compat-future:5006', secretKey: 'test' });
+      try {
+        const compatibility = await connector.getCompatibility();
+
+        expect(compatibility.supported).toBe(false);
+        expect(compatibility.blockers).toEqual([
+          'Server version 26.11.0 exceeds maximum supported version 26.10.0',
+        ]);
+      } finally {
+        await connector.disconnect();
+      }
+    });
+
+    it('preserves an explicitly configured ceiling below Actual 26.10', async () => {
+      const rangeConnector = new ActualConnector({
+        client: createMockClient({
+          getServerVersion: vi.fn().mockResolvedValue({ version: '26.10.0' }),
+        }),
+        credentialStore: new NullCredentialStore(),
+        compatibilityRange: { min: '24.0.0', max: '26.7.0' },
+      });
+      await rangeConnector.connect({ serverUrl: 'http://compat-explicit:5006', secretKey: 'test' });
+      try {
+        const compatibility = await rangeConnector.getCompatibility();
+
+        expect(compatibility.supported).toBe(false);
+        expect(compatibility.supportedVersion).toBe('26.7.0');
+        expect(compatibility.blockers).toEqual([
+          'Server version 26.10.0 exceeds maximum supported version 26.7.0',
+        ]);
+      } finally {
+        await rangeConnector.disconnect();
+      }
+    });
+
     it('should reject server version below min range', async () => {
       const rangeConnector = new ActualConnector({
         client: createMockClient({

@@ -8,7 +8,7 @@ backport. A–F, the Forge and Braces interim mitigations, and the Actual Node S
 Handlebars repair are implemented. The Nitro owner replacement remains blocked
 by traversal compatibility; no replacement walker has been applied.
 
-## v0.9 follow-up — 2026-10-22
+## Editor and Forge follow-up — 2026-10-22
 
 The user approved only Vite **8.3.2 → 8.3.3**, standalone launch-editor
 **2.14.1 → 2.14.2** (both MIT), and bounded hardening of the existing Forge
@@ -49,11 +49,14 @@ including on Windows; the full Linux security suite contains **68 tests**.
 
 The saved audit for pre-update head `b3faa0e` reported 19 findings (four high,
 13 moderate, two low). Its high-only console identifies Forge, Braces, Vite and
-launch-editor; it does not enumerate all lower-severity findings. Local validation
-does not submit a fresh dependency graph; the existing remote CI audit remains
-unchanged and nonblocking. Forge and Braces retain
-their advisory flags despite local mitigations, so this is not a clean-audit
-claim. Existing Braces guards and all other patches are preserved.
+launch-editor; it does not enumerate all lower-severity findings. A fresh
+`pnpm audit --json` on 2026-10-23 reports **14 findings: two high, ten moderate,
+two low and zero critical**. Vite and launch-editor are absent from that report.
+The incomplete older record cannot establish the exact lower-severity advisory
+delta. Forge and Braces retain their high advisory flags despite local
+mitigations, so the audit still fails. The existing remote CI audit remains
+unchanged and nonblocking. Existing Braces guards and all other patches are
+preserved; this is not a clean-audit claim.
 
 ## Applied and verified
 

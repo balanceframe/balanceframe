@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,9 @@ import {
   withLiquidityFacts,
 } from '../../actual-adapter/src/normalizer.js';
 import { actualLiquidityRequest } from '../../../tests/contract/fixtures/actual-liquidity.js';
+import { ActualConnector } from '../../actual-adapter/src/connector.js';
+import type { ActualClient } from '../../actual-adapter/src/connector.js';
+import { NullCredentialStore } from '../../actual-adapter/src/credentials.js';
 import { ConnectionManager } from '../src/connection-manager.js';
 import type {
   ManualTransactionInput,
@@ -1610,6 +1613,157 @@ describe('authoritative application liquidity service', () => {
       } finally {
         releaseAdapter();
         await execution.catch(() => undefined);
+      }
+    },
+  );
+
+  it.each(['parent', 'nested child'] as const)(
+    'keeps a lost-acknowledgement completion held when Actual retains a %s error',
+    async (location) => {
+      current = snapshot(20000, '2026-09-06T10:00:00.000Z', false, 15000, 2000);
+      await service.saveObservations(actor, {
+        expectedVersion: 1, expiresAt,
+        observations: ['checking', 'savings'].map((accountId) => ({
+          accountId, currentLedgerConfirmed: true, kind: 'cash', currency: 'USD',
+          owned: true, holds: money('0'),
+        })),
+      });
+      const session = await service.saveSession(actor, null, {
+        accountId: 'checking', expiresAt,
+        items: [
+          { id: 'food', categoryId: 'food', accountId: 'checking', amount: money('600'),
+            purchaseAt: now, requiredBy: now },
+          { id: 'other', categoryId: 'other', accountId: 'checking', amount: money('400'),
+            purchaseAt: now, requiredBy: now },
+        ],
+      });
+      const proposed = await service.proposeSessionCompletion(actor, session.id, {
+        expectedSessionVersion: session.version, idempotencyKey: `error-proposal:${location}`,
+      });
+      const approver = await addCompletionApprover(proposed, `error-peer:${location}`);
+      const approved = await service.approveSessionCompletion(approver, proposed.id, {
+        payloadHash: proposed.payloadHash!, expectedVersion: proposed.version,
+        idempotencyKey: `error-approval:${location}`,
+      });
+      type ActualTransaction = Awaited<ReturnType<ActualClient['getTransactions']>>[number];
+      const rows: ActualTransaction[] = [];
+      const client: ActualClient = {
+        init: vi.fn().mockResolvedValue({
+          send: vi.fn(), getDataDir: vi.fn(), sendMessage: vi.fn(),
+          amountToInteger: vi.fn(), integerToAmount: vi.fn(),
+        }),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+        getBudgets: vi.fn().mockResolvedValue([{
+          id: 'fixture', groupId: 'fixture', name: 'Fixture', encrypted: false, state: 'remote',
+        }]),
+        downloadBudget: vi.fn().mockResolvedValue(undefined),
+        loadBudget: vi.fn().mockResolvedValue(undefined),
+        sync: vi.fn().mockResolvedValue(undefined),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getAccounts: vi.fn().mockResolvedValue([{
+          id: 'checking', name: 'Checking', offbudget: false, closed: false, balance_current: 20000,
+        }]),
+        getAccountBalance: vi.fn().mockResolvedValue(20000),
+        getTransactions: vi.fn().mockImplementation(async () => rows),
+        getPayees: vi.fn().mockResolvedValue([]),
+        getCategories: vi.fn().mockResolvedValue([
+          { id: 'food', name: 'Food', group_id: 'living', is_income: false, hidden: false },
+          { id: 'other', name: 'Other', group_id: 'living', is_income: false, hidden: false },
+        ]),
+        getCategoryGroups: vi.fn().mockResolvedValue([
+          { id: 'living', name: 'Living', is_income: false, hidden: false },
+        ]),
+        getBudgetMonths: vi.fn().mockResolvedValue([]),
+        getBudgetMonth: vi.fn().mockResolvedValue({ month: '2026-09', categoryGroups: [] }),
+        getRules: vi.fn().mockResolvedValue([]),
+        getSchedules: vi.fn().mockResolvedValue([]),
+        getTags: vi.fn().mockResolvedValue([]),
+        runBankSync: vi.fn().mockResolvedValue(undefined),
+        addTransactions: vi.fn().mockImplementation(async (_accountId: string, added: unknown[]) => {
+          const parent = structuredClone(added[0]) as ActualTransaction;
+          parent.subtransactions = parent.subtransactions?.map((child, index) => ({
+            ...child, id: `manual-error-child-${index}`,
+          }));
+          const erroneous = location === 'parent' ? parent : parent.subtransactions![0]!;
+          erroneous.error = { type: 'SplitTransactionError', version: 1, difference: 0 };
+          rows.push(parent);
+          throw new Error('Synthetic acknowledgement lost after persistence');
+        }),
+        createAccount: vi.fn().mockResolvedValue('unused'),
+        updateTransaction: vi.fn().mockResolvedValue(undefined),
+        createRule: vi.fn().mockResolvedValue({ id: 'unused' }),
+        deleteRule: vi.fn().mockResolvedValue(true),
+        setBudgetAmount: vi.fn().mockResolvedValue(undefined),
+      };
+      const connector = new ActualConnector({
+        client, credentialStore: new NullCredentialStore(), mode: 'reviewAndApply',
+        cacheDir: join(directory, 'actual-cache'),
+      });
+      await connector.connect({ serverUrl: 'http://actual', secretKey: 'synthetic-test-only' });
+      await connector.selectBudget('fixture');
+      try {
+        const mutationManager = new ConnectionManager({
+          readFile: async () => JSON.stringify({
+            version: 1, serverUrl: 'http://actual', budgetId: 'fixture',
+            budgetName: 'Fixture', groupId: 'fixture',
+          }),
+          writeFile: async () => {},
+          credentialStore: {
+            load: async () => ({ serverUrl: 'http://actual', secretKey: 'synthetic-test-only' }),
+            store: async () => {},
+          },
+          connectorFactory: async () => ({
+            connect: async () => [],
+            selectBudget: async () => ({
+              id: 'fixture', groupId: 'fixture', name: 'Fixture', encrypted: false,
+            }),
+            synchronize: async () => ({ financialSnapshot: current, snapshot: current.legacySnapshot }),
+            createManualTransaction: connector.createManualTransaction.bind(connector),
+            disconnect: async () => {},
+          }),
+        });
+        const writable = new LiquidityService({
+          connectionManager: manager, mutationConnectionManager: mutationManager,
+          store, native, clock: () => new Date(clockNow),
+        });
+        const uncertain = await writable.executeSessionCompletion(actor, proposed.id, {
+          payloadHash: proposed.payloadHash!, expectedVersion: approved.version,
+          idempotencyKey: `error-execution:${location}`,
+        });
+        expect(uncertain.phase).toBe('review_required');
+        expect(client.addTransactions).toHaveBeenCalledTimes(1);
+
+        const synchronized = await connector.synchronize({ refresh: false });
+        current = synchronized.financialSnapshot;
+        expect(current.legacySnapshot.transactions[0]?.id).toBe(rows[0]?.id);
+        expect(current.legacySnapshot.transactions[0]?.subtransactions).toHaveLength(2);
+        await expect(writable.reconcileSessionCompletion(actor, proposed.id, {
+          payloadHash: proposed.payloadHash!, expectedVersion: uncertain.version,
+          idempotencyKey: `error-recovery:${location}`,
+        })).rejects.toThrow(/Complete account and transaction coverage/);
+        expect((await writable.sessionCompletion(actor, proposed.id)).phase).toBe('review_required');
+        expect(store.liquidity.getClaimSet({ ...actor, now }).bundles.map(({ state }) => state))
+          .toEqual(['initiated']);
+        expect(store['db'].prepare(
+          "SELECT 1 FROM session_completion_evidence WHERE proposal_id=? AND evidence_kind='manual_parent'",
+        ).get(proposed.id)).toBeUndefined();
+        expect(client.addTransactions).toHaveBeenCalledTimes(1);
+
+        const persisted = rows[0]!;
+        persisted.error = null;
+        for (const child of persisted.subtransactions ?? []) child.error = null;
+        current = (await connector.synchronize({ refresh: false })).financialSnapshot;
+        const recovered = await writable.reconcileSessionCompletion(actor, proposed.id, {
+          payloadHash: proposed.payloadHash!, expectedVersion: uncertain.version,
+          idempotencyKey: `corrected-recovery:${location}`,
+        });
+        expect(recovered).toMatchObject({
+          phase: 'verified', manualTransactionId: persisted.id,
+        });
+        expect(store.liquidity.getClaimSet({ ...actor, now }).bundles).toEqual([]);
+        expect(client.addTransactions).toHaveBeenCalledTimes(1);
+      } finally {
+        await connector.disconnect();
       }
     },
   );

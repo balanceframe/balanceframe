@@ -23,6 +23,9 @@ release. See the [current acceptance checklist](roadmap/post-mvp/11-5-implementa
 - Email forwarding is deferred by user direction. Authenticated browser validation,
   the OCR container build and final workspace/release gates remain open. No live
   financial changes, account connections or deployment are included.
+
+## Unreleased — fixes
+
 - Native Windows now rejects the exported `EncryptedCredentialStore` before
   filesystem access. Existing files are preserved, with no automatic migration
   or fallback. Explicit `EnvCredentialStore` and Linux/Docker persistence remain

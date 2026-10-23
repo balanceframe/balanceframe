@@ -4,6 +4,7 @@ import {
   copyFileSync,
   existsSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -115,7 +116,7 @@ function stagedProject() {
   return { directory, poisonCompose };
 }
 
-function runValidator(overlayPath = researchOverlay, { canonicalPath, inheritedTmpdir } = {}) {
+function runValidator(overlayPath = researchOverlay, { canonicalPath, inheritedTmpdir, composeBin } = {}) {
   const { directory, poisonCompose } = stagedProject();
   const files = [
     join(directory, 'compose.yaml'),
@@ -135,12 +136,34 @@ function runValidator(overlayPath = researchOverlay, { canonicalPath, inheritedT
     VALUESERP_API_KEY: 'caller-provider-secret-sentinel-private',
     BALANCEFRAME_MERCHANT_CONFIG_FILE: join(directory, 'caller-source-sentinel'),
   };
-  if (process.env.COMPOSE_BIN || compose.command !== 'docker') env.COMPOSE_BIN = compose.command;
+  if (composeBin || process.env.COMPOSE_BIN || compose.command !== 'docker') env.COMPOSE_BIN = composeBin ?? compose.command;
   return spawnSync('bash', [validator, canonicalPath ?? files[0], files[1], files[2]], {
     cwd: directory,
     env,
     encoding: 'utf8',
   });
+}
+
+function policyElidingRenderer({ elideRaw = false } = {}) {
+  const path = join(scratch(), 'compose-policy-eliding.mjs');
+  const { command, prefix } = renderer();
+  writeFileSync(path, `#!${process.execPath}
+import { spawnSync } from 'node:child_process';
+const args = process.argv.slice(2);
+const result = spawnSync(${JSON.stringify(command)}, [...${JSON.stringify(prefix)}, ...args], { encoding: 'utf8' });
+if (result.status !== 0) process.exit(1);
+const config = JSON.parse(result.stdout);
+// Model typed serialization dropping policy fields; the raw model retains them.
+if (${JSON.stringify(elideRaw)} || !args.includes('--no-interpolate')) {
+  for (const service of Object.values(config.services ?? {})) {
+    for (const mount of service.volumes ?? []) {
+      if (mount.bind) delete mount.bind.create_host_path;
+    }
+  }
+}
+process.stdout.write(JSON.stringify(config));
+`, { mode: 0o700 });
+  return path;
 }
 
 function assertSafeValidatorOutput(result, extraForbidden = []) {
@@ -219,7 +242,10 @@ describe('optional merchant research Compose overlay', () => {
     assert.equal(mounts[0].source, source);
     assert.equal(mounts[0].target, fixedContainerPath);
     assert.equal(mounts[0].read_only, true);
-    assert.equal(mounts[0].bind?.create_host_path, false);
+    assert.ok(mounts[0].bind, 'the explicit bind policy survives rendering');
+    assert.ok(mounts[0].bind.create_host_path === false ||
+      !Object.hasOwn(mounts[0].bind, 'create_host_path'),
+    'the bind disables host-path creation, including renderers that omit false');
     assert.equal(existsSync(dirname(source)), false, 'Compose config rendering does not create the absent host source directory');
   });
 
@@ -228,6 +254,92 @@ describe('optional merchant research Compose overlay', () => {
     assert.equal(result.status, 0, 'offline validator succeeds with explicit renderer and its private sentinels');
     assertSafeValidatorOutput(result);
   });
+
+  it('accepts a safe bind when the renderer omits its explicit false field', () => {
+    const source = join(scratch(), 'missing', 'merchant.json');
+    const config = parseConfig(invokeCompose([canonical, researchOverlay], sentinelEnvironment(source)));
+    const mount = config.services.balanceframe.volumes.find((mount) => mount.target === fixedContainerPath);
+    assert.ok(mount.bind && typeof mount.bind === 'object', 'the explicit bind policy survives rendering');
+    assert.notEqual(mount.bind.create_host_path, true, 'the renderer never enables host-path creation');
+    assert.match(readFileSync(researchOverlay, 'utf8'), /^\s+create_host_path: false\s*$/m,
+      'the source overlay explicitly disables host-path creation');
+    const result = runValidator();
+    assert.equal(result.status, 0, 'safe rendering is accepted with explicit false or its omitted representation');
+    assertSafeValidatorOutput(result);
+  });
+
+  for (const policy of ['true', 'omitted', 'missing-field', 'short']) {
+    it(`rejects the research bind with ${policy} host-path creation policy`, () => {
+      const overlay = join(scratch(), 'unsafe-research.yaml');
+      const original = readFileSync(researchOverlay, 'utf8');
+      assert.match(original, /^\s+create_host_path: false\s*$/m, 'the control mutates the explicit safe policy');
+      let mutated;
+      if (policy === 'short') {
+        mutated = original.replace(/    volumes:[\s\S]*$/u,
+          '    volumes:\n      - ${BALANCEFRAME_MERCHANT_CONFIG_FILE:?required}:/run/secrets/merchant-research.json:ro\n');
+      } else if (policy === 'missing-field') {
+        mutated = original.replace('          create_host_path: false\n', '');
+      } else {
+        mutated = original.replace('        bind:\n          create_host_path: false\n',
+          policy === 'true' ? '        bind:\n          create_host_path: true\n' : '');
+      }
+      assert.notEqual(mutated, original, 'the unsafe control changes the source overlay');
+      writeFileSync(overlay, mutated);
+      const result = runValidator(overlay);
+      assert.notEqual(result.status, 0, 'the validator rejects the unsafe or unspecified policy');
+      assertSafeValidatorOutput(result);
+    });
+  }
+
+  it('validates safe source policy when normalized JSON elides the policy field', () => {
+    const result = runValidator(researchOverlay, { composeBin: policyElidingRenderer() });
+    assert.equal(result.status, 0, 'the raw source policy proves the safe normalized representation');
+    assertSafeValidatorOutput(result);
+  });
+
+  it('rejects a renderer that cannot preserve the raw source policy', () => {
+    const result = runValidator(researchOverlay, { composeBin: policyElidingRenderer({ elideRaw: true }) });
+    assert.notEqual(result.status, 0, 'missing raw evidence must fail closed even for safe source YAML');
+    assertSafeValidatorOutput(result);
+  });
+
+  for (const policy of ['true', 'short', 'decoy-false']) {
+    it(`rejects ${policy} source policy when normalized JSON elides the policy field`, () => {
+      const overlay = join(scratch(), 'unsafe-elided-policy.yaml');
+      const original = readFileSync(researchOverlay, 'utf8');
+      const mutated = policy === 'short'
+        ? original.replace(/    volumes:[\s\S]*$/u,
+          '    volumes:\n      - ${BALANCEFRAME_MERCHANT_CONFIG_FILE:?required}:/run/secrets/merchant-research.json:ro\n')
+        : original.replace('create_host_path: false', 'create_host_path: true') +
+          (policy === 'decoy-false' ? '\nx-unrelated-policy:\n  create_host_path: false\n' : '');
+      assert.notEqual(mutated, original, 'the fixture changes the actual research mount policy');
+      writeFileSync(overlay, mutated);
+      const result = runValidator(overlay, { composeBin: policyElidingRenderer() });
+      assert.notEqual(result.status, 0, 'the source mount policy must reject unsafe normalized output');
+      assertSafeValidatorOutput(result);
+    });
+  }
+
+  for (const syntax of ['long', 'short']) {
+    it(`rejects an extra ${syntax} mount whose interpolated target collides with the safe research bind`, () => {
+      const overlay = join(scratch(), 'colliding-research-target.yaml');
+      const original = readFileSync(researchOverlay, 'utf8');
+      const extraMount = syntax === 'long'
+        ? [
+          '      - type: bind',
+          '        source: ${BALANCEFRAME_MERCHANT_CONFIG_FILE:?required}',
+          '        target: ${COLLIDING_TARGET:-/run/secrets/merchant-research.json}',
+          '        read_only: true',
+          '        bind:',
+          '          create_host_path: true',
+        ]
+        : ['      - ${BALANCEFRAME_MERCHANT_CONFIG_FILE:?required}:${COLLIDING_TARGET:-/run/secrets/merchant-research.json}:ro'];
+      writeFileSync(overlay, `${original}${extraMount.join('\n')}\n`);
+      const result = runValidator(overlay, { composeBin: policyElidingRenderer() });
+      assert.notEqual(result.status, 0, 'an extra source mount cannot replace the proven safe bind after interpolation');
+      assertSafeValidatorOutput(result);
+    });
+  }
   it('suppresses diagnostics for a missing canonical project parent', () => {
     const directory = scratch();
     const pathSentinel = 'canonical-parent-path-sentinel-private';

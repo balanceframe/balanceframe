@@ -1,0 +1,313 @@
+# E2E report validation — 2026-10-22
+
+## Scope and provenance
+
+The third-party `E2E-TEST-LOG.pdf` identifies BalanceFrame main
+`5c845c8cd681771abb753612380814169209216f` (#37). A fresh `git fetch origin main`
+returned that same revision. Changes are isolated in
+`fix/e2e-report-validation-20261022`, worktree
+`/workspace/balanceframe-e2e-fixes`; the original `work` checkout is preserved.
+Remote branch inventory contained main and the active transaction-evidence
+branch. PR38 was initially fetched read-only as `origin/pr38` at
+`de27067e8a3dd3589a36979f06835b448aec1bb8`. Its broader feature work remains
+excluded. After native CI exposed the Windows dependency, the user authorized
+transferring only its existing cache, credential-boundary and CI-propagation
+fixes into this branch. Source provenance and verification are recorded below;
+PR38 itself remains unchanged.
+
+The exact source is Library item `libfile_81c5d0a97d0481918714ceb7c560cfcf`,
+144,699 bytes, 11 pages. Both the first supported consumer-local materialization
+and the single permitted retry failed with `library file transfer failed:
+download failed`. No readable local PDF was produced. The supported Library
+read did return the complete text: all 11 pages, 495 lines, `has_more=false`.
+That text was read fully as untrusted evidence. Its referenced raw logs and
+screenshots were not attached. No storage URL was guessed, no denial was
+bypassed, and no additional transfer retry was attempted.
+
+Only synthetic, disposable fixtures were used. Ponytail Full governed bounded
+implementation and independent correctness/complexity reviews. Explicit
+Sol/high worker requests were admitted; backend model identity and the running
+lead's model selection were not independently attested. Initial bounded fixes
+needed no Astra planning or larger architecture change; the later read-only
+Windows integration decision used targeted Ponytail Ultra with Astra/high.
+
+## Claim register
+
+Statuses apply to the fetched main revision before these local changes.
+"Confirmed" does not adopt a report's suggested remedy. Intentional security
+denials remain intact.
+
+| Report claim | Status | Reproduction, disposition, and evidence |
+| --- | --- | --- |
+| 1. Actual 26.10 reports degraded because the default ceiling is 26.7 (rows 18/25) | confirmed | Existing live Proof 7 fails at `05-disposable-bank-sync.test.ts:638` with degraded before the fix and passes afterward against Actual server/API 26.10. Default ceiling becomes 26.10; tests still reject 26.11 and honor an explicit 26.7 limit. All 102 live tests in suites 01–09 pass, including native write/readback contracts. `/tmp/bf-health-proof7-red.log`, `/tmp/bf-health-proof7-green.log`, `/tmp/balanceframe-actual-health-evidence.md`. |
+| 2. Connecting alone leaves an owner without financial access (row 41) | confirmed | Fresh production-build HTTP journey: bootstrap, Better Auth sign-in, password reauthentication, create/select space, discover/connect canonical fixture budget. Connection returns 200 and financial-grant count remains zero; financial-health, Review and Sync return 403. This is intended least-privilege enforcement. Quick Start omitted the necessary grant workflow; README now explains explicit membership/resource grants, Sync/full-read requirements and empty-queue disclosure limits. No grants or access policy changed. A more guided consent flow remains a product decision; the report's automatic owner-grant proposal was not implemented. `/tmp/balanceframe-e2e-http-evidence.json`. |
+| 3. Better Auth-only readiness returns 503 (row 37) | confirmed | Regression-first auth tests expected ready but received degraded. Shared configuration predicate follows the existing Better Auth secret precedence. Production build now returns 200 with all readiness checks ok without legacy token or bypass. Migration/store failure checks remain. `/tmp/balanceframe-auth-red.log`, `/tmp/balanceframe-auth-final.log`, `/tmp/balanceframe-e2e-http-evidence.json`. |
+| 4. Anonymous/invalid API credentials produce 503 and legacy configuration guidance (row 38) | confirmed | Both middleware denial paths reproduced; valid Better Auth configuration now yields existing 401 challenge/envelope. Production HTTP verifies anonymous Review and invalid Bearer Spaces requests return 401; an invalid explicit key cannot fall back to a valid session. Truly absent configuration, recorded migration failures, verified-key workflow-store failure and production bypass rejection retain 503. `/tmp/balanceframe-auth-evidence.md`, HTTP evidence above. |
+| 5. Compose v2 validators reject safe explicit false bind policy (row 13) | confirmed | Installed Compose 2.40.3 omits false but retains `bind:{}`. Controlled daemon create probes show both explicit false and empty bind reject absent sources; true/short syntax accept container creation with an absent bind source. Validator accepts this equivalent normalized representation while source assertions require explicit YAML false. Negative tests reject true, removed bind block/field, and short syntax. Secret suppression and isolated renderer inputs remain. 23 deployment tests pass. Compose 2.39 and v5 were not available here. `/tmp/balanceframe-compose-evidence.md`. |
+| 6. Container safety test expects obsolete prune step and is orphaned (row 14) | confirmed | Old test fails `pruneIndex >= 0`, actual -1. Runtime intentionally copies self-contained Nitro output plus native artifacts; no prune restoration is needed. Static test now checks that runtime contract, final non-root user, and all native artifact copies. Six deliberate artifact/security mutations fail. Portable safety test runs after contract tests; Linux CI runs all deployment Node tests. 147 contract + 8 static checks pass. `/tmp/balanceframe-deployment-evidence.md`. |
+| 7. Unknown API path returns 200 SPA HTML (row 39) | confirmed | Live pre-fix `/api/health/report-nonexistent` returned 200 text/html. Generic API catchall now returns private JSON404 without reflecting path/query. Specific health/readiness/auth routes still win; protected paths still pass through auth. Production HTTP verifies authenticated unknown path404, public health descendant404, normal routes200, missing/invalid credentials401. `/tmp/balanceframe-e2e-unknown-before.txt`, `/tmp/balanceframe-e2e-http-evidence.json`. |
+| 8a. Restricted fchown prevents installation (row 5) | not reproduced | Existing frozen lockfile installed successfully with Node24.19.0/pnpm10.24.0 and a writable pnpm store. First offline attempt lacked one cached tarball; normal frozen install completed without a version/manifest change. No filesystem privacy checks or native build validation were disabled. The report's fchown failure is an environment observation, not established product behavior here. |
+| 8b. Repo does not constrain pnpm version (row 5) | not reproduced | Root `packageManager` already specifies pnpm10.24.0 and `engines.pnpm` is 10.x; Nix/Docker tooling uses pnpm10. No package upgrade, new shim or security workaround was added. |
+| 9. 250,000-row adapter test exceeds 10s under unrelated shared load (rows 19/26) | not reproduced | Same full-data assertion passes isolated in 2.62s and in full adapter suites (374 tests). Existing worker serialization already avoids credential-KDF contention. No transactions, assertions, timing boundary or correctness checks were removed; timeout remains unchanged. Reproducing arbitrary external load was not treated as evidence of a product defect. `/tmp/balanceframe-misc-evidence.md`. |
+| 10. CLI lacks --version (row 34) | confirmed | Executable regression returns `unknown_flags` before fix (the report imprecisely said unknown_command). Sole `--version` now prints the CLI manifest's 0.1.0 without credentials/server. Unknown commands, extra flags and help retain existing behavior. 179 CLI tests pass; spawned executable V8 coverage100%. `/tmp/balanceframe-misc-evidence.md`. |
+| 11. Chromium prerequisite undocumented (row 29) | not reproduced | Main README already says "installed Chromium/Chrome" and supplies `--chromium-path` for the real Review benchmark. Browser runner validates absolute executable path, file type and execute access. No browser download/package or weaker sandbox was added. Interactive verification here is separately environment-limited as recorded below. |
+| 12. groupId fails where public budget file ID succeeds (row 40) | not reproduced | The exact reported live groupId retry was not independently executed. Source/contract trace confirms public budget `id` selects and binds the budget; adapter uses `groupId` specifically for SDK downloads. These identifiers are intentionally distinct. The production HTTP test successfully connects by public ID. README now distinguishes IDs for selection/grants; API contract and scope/binding checks remain unchanged. Accepting arbitrary sync-group IDs would change that contract and was not implemented. `/tmp/balanceframe-misc-evidence.md`. |
+| 13. Recursive pnpm stops at the first failing package (row 15) | confirmed | Intentional runner behavior, not a product defect. The initial native smoke failure also stopped its enclosing pnpm invocation as designed. This behavior remains. A separate inherited PowerShell multi-command step masked earlier failures during native CI; the later authorized correction gives each command its own mandatory step. No dependency validation was weakened. |
+
+No claim was found already fixed by a newer main revision: fetched main equals
+the report's tested revision. Some claims overlook documentation/constraints
+already present there; those are recorded as not reproduced instead.
+
+## Validation
+
+Regression tests preceded implementation. Independent correctness and
+complexity workers reviewed connected code and active-branch overlap; the
+complexity review caught a draft documentation error about Sync requiring
+full-read, which was corrected before finalization.
+
+Completed checks:
+
+- Actual adapter: 374 tests; line coverage87.36%, connector85.13%; changed
+  ceiling line executed. Lint and adapter typecheck pass.
+- Live Actual26.10: 102 tests across all nine suites. The first 01–08 run
+  passed101; suite09 passed after building existing inference/native outputs.
+  Assertions were unchanged to resolve those setup prerequisites.
+- Web: full suite116 files/2023 tests. Focused changed auth/catchall coverage:
+  statements92.63%, branches88.2%, functions100%, lines94.11%.
+- CLI: 179 tests; package statements88.33%, branches81.98%, lines89.24%.
+  Separate subprocess V8 collection covers executable entrypoint100%.
+- Contract: 147 tests plus eight static container safety checks. All23
+  deployment tests and offline Compose validator pass; no skipped tests.
+- Fresh native release build and complete native smoke pass. The saved
+  environment's cached native binary lacked an export; it was replaced only
+  in this worktree by rebuilding the unchanged Rust sources.
+- Fresh Nuxt production build, root lint, root typecheck, coverage-tool tests,
+  shell syntax and `git diff --check` pass.
+- Production HTTP journey uses real Better Auth sessions, no legacy token,
+  development bypass disabled, isolated auth/workflow/connection paths and
+  the canonical disposable Actual fixture. Eighteen observed requests verify
+  readiness/authentication/status precedence and unchanged financial denial.
+
+Independent review evidence: `/tmp/balanceframe-correctness-review.md`; worker
+implementation notes are named in the register. Detailed temporary evidence is
+local to this execution environment; it is not the report author's missing logs.
+
+## Remaining limits and cleanup
+
+- **Local PDF bytes:** materialization failed twice as described above;
+  complete supported Library text was available. No approval denial was
+  reported, and no readable local PDF is claimed.
+- **Interactive browser:** Chromium aborted before opening a page because its
+  SUID sandbox helper is not correctly configured. The exact failure is in
+  `/tmp/balanceframe-e2e-browser.log`. No `--no-sandbox`, permission changes,
+  security bypass, or alternate security configuration was used. HTTP and
+  component checks are not end-to-end browser sign-off.
+- **Coverage/environment scope:** full workspace aggregate coverage, Nix,
+  production Docker image execution, native Windows, live merchant providers,
+  and additional Compose versions were not verified. No financial core code
+  changed. No claim of release readiness follows these local checks.
+- Actual server PID2319 and `/tmp/bf-health-actual26.10` ownership was explicitly
+  handed from the fixture worker to the lead before cleanup. Web processes
+  were identified from their owned launch/session and exact command. An initial
+  `/proc/9911/cwd` ownership probe was denied with PermissionError13; command
+  identity verification provided a permitted alternative and shutdown succeeded.
+  Final identity-verified shutdown stopped Actual PID2319 and production web
+  PID20273; loopback ports3032/5026 are closed. Generated connection/auth/fixture
+  credentials are excluded from the branch.
+- Compose probe containers, scratch image and networks were removed. The
+  separate daemon may retain directories under its uniquely owned
+  `/tmp/balanceframe-bind-probe-2_n1ou9o/{true,short}/missing.json`; its filesystem
+  is not the client filesystem. Existence is unverified and no privileged
+  helper/cleanup deployment was used. Recovered event evidence is
+  `/tmp/balanceframe-compose-daemon-events.json`.
+
+No packages were added/upgraded, grants broadened, access changed, branches
+merged, or release/deployment performed. Initial local results were reported
+before publication. The user subsequently approved pushing this fix branch and
+opening draft [PR39](https://github.com/balanceframe/balanceframe/pull/39).
+
+## Publication CI follow-up
+
+The approved initial publication head was
+`ea04abad53a495514e4168ca2007ed7422ac3bd7`. Its first CI run39762739322
+passed macOS ARM64. Linux passed Nix validation, build, typecheck, lint and
+dependency-security checks, then failed two unsafe Compose policy controls
+using Compose5.3.1. The safe baseline passed, but explicit-true and short-syntax
+controls returned validator0. The log did not retain the unsafe rendered JSON;
+the exact serializer cause is unverified.
+
+The bounded fix retains those controls and adds a separate private
+`config --no-interpolate --no-normalize --format json` model. It requires an
+explicit false on the exact read-only research bind and a complete raw volume
+set containing only that bind and the canonical data volume. Existing normalized
+checks still validate actual resolved source paths and the full deployment.
+Deterministic tests reproduce lost normalized policy evidence and reject true,
+short syntax, an unrelated false decoy, missing raw policy evidence, and long-
+or short-syntax mounts whose interpolated targets collide with the safe target.
+Independent review reproduced the collision before the complete-set check and
+confirmed rejection afterward.
+Local Compose2.40.3 passes all30 deployment tests; actual Compose5.3.1 rerun is
+required. No parser/package installation or security assertion removal.
+
+Windows also exposed CRLF sensitivity in the new static artifact test. A
+canonical-source fixture executes the actual test under LF and CRLF, and
+requires rejection of each of three missing native artifacts under both.
+Before the fix,3/8 regression cases failed; normalizing CRLF at the Dockerfile
+read makes all eight pass without changing exact artifact comparisons. The
+contract invocation now passes155 Vitest cases plus eight static checks.
+
+Two earlier Windows failures in that run report cache-path traversal for normal
+server URL keys in adapter/application tests. They originate in main's
+POSIX-only containment comparison and are already fixed in active PR38's
+platform-aware direct-child guard. PR38 also splits the portable test step so
+an earlier failure cannot be hidden by the last command succeeding. Neither
+was included at the initial publication head. The subsequent authorized
+transfer is recorded below. Windows verification requires inspecting raw suite
+results even if an inherited multi-command step reports success.
+
+Read-only comparison refreshed PR38 to
+`3334f6fbef707b9d45d9cb563c2e207e8fd6b87a`. Four shared filenames have distinct
+hunks; the initial report patch passed an isolated temporary-index apply-check
+against that revision. Combined Windows validation depends on integrating and
+retesting the separate PR38 fixes after authorization. No merge, tag, release,
+deployment or access change is part of this draft PR.
+
+Follow-up local evidence: `/tmp/balanceframe-compose-ci-evidence.md`,
+`/tmp/balanceframe-container-ci-evidence.md`; first-run CI logs are
+`/tmp/balanceframe-ci-linux-ea04aba.log` and
+`/tmp/balanceframe-ci-windows-ea04aba.log`.
+
+The exact-head run39764531395 for `45fa5d0` completed. Both macOS jobs passed.
+Linux passed Compose5.3.1, all30 deployment controls, merchant measurement and
+scaled Actual/Review/Sync proofs, then executed the full instrumented suite.
+The final coverage check reported workspace90.24%, web changed files94.12% and
+adapter changed files85.13%. It failed only CLI changed files43.48% against the
+unchanged80% threshold: the aggregate command invoked the executable with no
+arguments, omitting the version/help/error subprocess paths checked locally.
+Aggregate coverage is not accepted as passing; later audit/clippy were skipped.
+The complete log is `/tmp/balanceframe-ci-linux-45fa5d0.log`.
+
+The bounded correction runs asserted real CLI subprocess cases through that
+same owned coverage stage: version, both help families, and parser errors.
+The runner regression reproduced43.48% before the wiring change and100%
+afterward. The exact reporter command covers46/46 entrypoint lines; all179 CLI
+tests and29 coverage-tool tests pass. No checker, threshold, production CLI,
+dependency or security assertion changed. Independent correctness/complexity
+reviews and lint/typecheck/syntax checks pass. A fresh exact-head CI run is
+still needed before accepting aggregate coverage. Evidence:
+`/tmp/balanceframe-cli-coverage-ci-evidence.md`.
+
+The Windows job's success badge is also not accepted. Its raw log confirms the
+same adapter/application cache errors were masked by the last portable command
+succeeding. CLI179, contract155 and eight static artifact checks did pass.
+The read-only integration assessment in
+`/tmp/balanceframe-windows-integration-plan.md` recommends transferring only
+PR38 commits `5da0080`, `b00e98e` and `de27067` into this main-based branch when
+authorized, preserving their complete cache/credential/CI security semantics,
+tests and documentation. Workflow and release-note contexts need adaptation;
+unrelated evidence features and dependencies are excluded. Then the combined
+candidate needs independent review and fresh exact-head native platform gates.
+No transfer or branch mutation was performed during that assessment. The
+earlier recommendation to merge the report fixes before resolving this Windows
+dependency is withdrawn. This PR is not merge-ready.
+
+## Authorized Windows dependency transfer
+
+After the repeated native Windows failures, the user authorized transferring
+the bounded existing fixes into PR39. The source commits are:
+
+- `5da008004e5977483c8d6020829305f7229df27e`: direct-child cache containment,
+  native/Windows-path regressions and separate mandatory portable CI steps.
+- `b00e98ed10d136b90a88363727a1b5c010119cda`: non-vacuous native containment
+  assertions for both server caches.
+- `de27067e8a3dd3589a36979f06835b448aec1bb8`: native Windows encrypted-store
+  refusal, complete platform/POSIX security tests and compatibility notices.
+
+Only the twelve approved source files are transferred. Workflow context is
+adapted around this branch's existing deployment checks; the release notice
+uses a neutral Unreleased fixes heading. Existing report fixes remain intact.
+No unrelated PR38 feature, dependency, schema or financial authority is added.
+PR38 stays at `3334f6f` and is not rewritten or otherwise changed.
+
+The cache guard still rejects the base and parent and permits only a sanitized
+direct child, including native roots, Windows drive roots and UNC paths.
+Native Windows file-store construction refuses before options/configuration,
+path resolution or file access, even with a supplied master key. Existing files
+are untouched, without migration or fallback. Explicit environment storage
+remains available; real POSIX permissions, encryption and tamper assertions are
+retained. This deliberately changes support for explicit native Windows
+encrypted-file-store consumers; ADR 0007 and the release notice state it.
+
+Source tests were imported before production changes: 20 of 40 cache cases
+failed, all six platform-refusal cases failed, and the mandatory own-step CI
+contract failed. Existing-file preservation refusal was also reproduced red.
+After transfer, all 60 targeted adapter cases and the CI contract pass.
+The full adapter suite passes 422 tests with 87.37% overall line coverage and
+86.10% across changed production files, above the existing 80% threshold.
+Application 1,348, CLI 179, contract 155 plus eight static container checks,
+and all 30 coverage-tool tests pass. Full workspace build, typecheck and lint
+pass. Native Windows and complete aggregate CI still require fresh
+exact-head execution; simulated platform tests alone are not acceptance.
+
+Implementation evidence: `/tmp/balanceframe-windows-extraction-evidence.md`.
+Independent reviews compare the combined candidate against the exact approved
+source patches and preserve the earlier auth, Actual compatibility, Compose,
+runtime artifact and CLI coverage changes. Integration does not authorize a
+merge, release, deployment, package change or PR38 rewrite.
+
+## Native CI fixture scheduling follow-up
+
+Run 39777983977 on `6ea825a` demonstrates that the new failure gates work:
+the native Windows adapter passes all 399 applicable tests, then the separate
+application step fails the existing Review-to-SQLite integration case
+`persists every authorized inferred target beyond the explanation page without
+freshness-clock issue churn`. It exceeds the unchanged 10,000 ms deadline;
+the reporter observes 16,346 ms, with 952 other cases passed before bail.
+Later CLI/contract steps stop rather than mask the failure. The raw log is
+`/tmp/balanceframe-ci-windows-6ea825a.log`.
+
+The bounded test-setup remedy transfers only the two-line application worker
+limit from existing PR38 commit
+`b53d9e619c246bb380e948991916077506841bdf`. It retains fork process isolation
+and bounds simultaneous file-backed SQLite fixtures with `maxWorkers: 1`,
+matching the adapter's existing pattern. No production code, assertion, target
+count, grant, 10-second deadline, inclusion or coverage gate changes.
+
+Supporting native evidence: PR38 run 39753116761 has a separate successful
+Windows application step; the exact case passes in 7,188 ms. Its test and
+fixture files are byte-identical to main. Other PR38 production differences
+mean this is not a controlled proof that contention caused the timeout.
+Before the config change, the isolated Linux case passes in 2.38 seconds;
+afterward all 1,348 application tests pass in 87.64 seconds. Fresh exact-head
+native CI is still required to confirm the remedy. No unrelated PR38 feature
+or dependency is transferred. Evidence:
+`/tmp/balanceframe-application-fixture-ci-evidence.md`.
+
+## Overflow fixture setup follow-up
+
+Run 39780049206 on `a87c5f1` confirms the preceding scheduling
+remedy on native Windows: the adapter passes 399 tests and the unchanged
+301-target Review case passes in 5,029 ms. The application gate then catches
+a different existing case, incoming-only aggregate overflow, exceeding its
+10,000 ms test deadline. It reports 24,935 ms and 1,059 other passes before
+bail. At the 12:51 UTC checkpoint this was the published head's current failure,
+not an old superseded failure or a misleading green badge.
+Raw evidence: `/tmp/balanceframe-ci-windows-a87c5f1.log`.
+
+The bounded correction transfers only existing PR38 commit
+`3334f6fbef707b9d45d9cb563c2e207e8fd6b87a`'s test-fixture patch. Construction
+of all 1,025 incoming rows and the same complete source grants (8,200 per-row
+durable grants plus fixed grants) move into a scoped setup hook with an
+explicit 60-second budget. The restrictive budget grant, actual analysis,
+overflow message/code/reason/retryability assertions and empty durable
+merchant-evidence check remain inside the unchanged 10-second test deadline.
+No financial source, row count, grant or assertion is removed or bypassed.
+
+Installed Vitest 4.1.11 applies independent timeout wrappers to setup hooks
+and test callbacks; the 60-second setup allowance does not widen analysis.
+PR38 native Windows evidence passes this case in 44,038 ms including hooks;
+that is not a claim that analysis itself takes 44 seconds. Local isolated
+before/after cases pass, and the full unchanged 1,348-case application suite
+passes in 87.72 seconds. The test file byte-matches the exact source commit.
+Fresh exact-head native CI remains required. Evidence:
+`/tmp/balanceframe-overflow-fixture-ci-evidence.md`.
