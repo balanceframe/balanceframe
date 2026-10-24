@@ -1,6 +1,30 @@
 import type { Database } from 'better-sqlite3';
 import type { LiquidityClaimBundle } from '@balanceframe/protocol-generated';
 
+function ensureLiquidityClaimMetadata(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS liquidity_claim_metadata (
+      budget_id TEXT NOT NULL,
+      claim_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK(mode IN ('inform','block')),
+      lifecycle_state TEXT NOT NULL CHECK(lifecycle_state IN ('active','released','consumed','expired')),
+      source_id TEXT NOT NULL,
+      policy_version TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL,
+      claim TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      consumption_evidence_id TEXT,
+      PRIMARY KEY(budget_id,claim_id),
+      FOREIGN KEY(budget_id,claim_id) REFERENCES liquidity_claims(budget_id,id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS liquidity_claim_consumption_evidence_unique
+      ON liquidity_claim_metadata (budget_id, consumption_evidence_id)
+      WHERE consumption_evidence_id IS NOT NULL;
+  `);
+}
+
 /** One migration, retaining row IDs, exact legacy hashes, approvals and audit references. */
 export function migrateLiquidityWorkflow(db: Database): void {
   db.exec(`
@@ -24,31 +48,13 @@ export function migrateLiquidityWorkflow(db: Database): void {
     CREATE TABLE liquidity_current_policy (budget_id TEXT PRIMARY KEY, version TEXT NOT NULL);
     CREATE TABLE liquidity_claim_revisions (budget_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE liquidity_claims (budget_id TEXT NOT NULL, id TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, bundle TEXT NOT NULL, PRIMARY KEY(budget_id,id), UNIQUE(budget_id,owner_kind,owner_id));
-    CREATE TABLE liquidity_claim_metadata (
-      budget_id TEXT NOT NULL,
-      claim_id TEXT NOT NULL,
-      actor_id TEXT NOT NULL,
-      mode TEXT NOT NULL CHECK(mode IN ('inform','block')),
-      lifecycle_state TEXT NOT NULL CHECK(lifecycle_state IN ('active','released','consumed','expired')),
-      source_id TEXT NOT NULL,
-      policy_version TEXT NOT NULL,
-      snapshot_id TEXT NOT NULL,
-      claim TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      consumption_evidence_id TEXT,
-      PRIMARY KEY(budget_id,claim_id),
-      FOREIGN KEY(budget_id,claim_id) REFERENCES liquidity_claims(budget_id,id)
-    );
-    CREATE UNIQUE INDEX liquidity_claim_consumption_evidence_unique
-      ON liquidity_claim_metadata (budget_id, consumption_evidence_id)
-      WHERE consumption_evidence_id IS NOT NULL;
     CREATE TABLE liquidity_allocations (budget_id TEXT NOT NULL, sequence INTEGER NOT NULL, allocation TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(budget_id,sequence));
     CREATE TABLE liquidity_supplemental_facts (budget_id TEXT NOT NULL, version INTEGER NOT NULL, facts TEXT NOT NULL, actor_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(budget_id,version));
     CREATE TABLE payment_preferences (budget_id TEXT NOT NULL, id TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(budget_id,id));
     CREATE TABLE spend_sessions (budget_id TEXT NOT NULL, id TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(budget_id,id));
     CREATE TABLE transfer_evidence (budget_id TEXT NOT NULL, evidence_id TEXT NOT NULL, proposal_id TEXT NOT NULL REFERENCES action_proposals(id), payload_hash TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(budget_id,evidence_id));
   `);
+  ensureLiquidityClaimMetadata(db);
 }
 
 /** Server-held immutable preview, deliberately not a proposal or reservation. */
@@ -116,6 +122,8 @@ export function migrateSessionCompletionWriteFences(db: Database): void {
 
 /** Upgrades previously persisted prospective scopes to distinct economic identities. */
 export function migrateScopedProspectiveEffects(db: Database): void {
+  // v0.4.0 completed migration 10 before metadata was added to that migration.
+  ensureLiquidityClaimMetadata(db);
   const rows = db.prepare(
     "SELECT c.budget_id,c.id,c.bundle,m.source_id FROM liquidity_claims c JOIN liquidity_claim_metadata m ON m.budget_id=c.budget_id AND m.claim_id=c.id WHERE c.owner_kind='prospective'",
   ).all() as { budget_id: string; id: string; bundle: string; source_id: string }[];
