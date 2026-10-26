@@ -30,7 +30,7 @@ const human = (actorId: string): HumanControlContext => ({
 // normalizer. The new merchant source fixture remains the single source of IDs.
 function sourceSnapshot(): ProtocolSnapshot {
   const fixture = z.object({ request: z.object({
-    transactions: z.array(z.record(z.unknown())),
+    transactions: z.array(z.record(z.string(), z.unknown())),
     payees: z.unknown(), categories: z.unknown(),
   }) }).parse(JSON.parse(readFileSync(
     new URL('../../../protocol/fixtures/merchant-intelligence.json', import.meta.url), 'utf8',

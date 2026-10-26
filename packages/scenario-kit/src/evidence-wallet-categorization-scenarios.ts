@@ -38,7 +38,7 @@ export async function initializeWalletCategorizationEvidence(options: EvidenceSc
     if (!options.seeded.readResources.some((resource) => resource.resourceKind === 'account' && resource.resourceId === accountId))
       throw new Error('Wallet scenario Checking source is outside the seeded Actual budget');
     const path = `/api/spaces/${persona.spaceId}/policy`;
-    const current = z.object({ policy: z.object({ version: z.string(), approvalThresholds: z.array(z.unknown()).optional(), operationApprovers: z.record(z.number()).optional() }) }).parse(evidenceResult(await owner.get(path), 'wallet scenario governance policy')).policy;
+    const current = z.object({ policy: z.object({ version: z.string(), approvalThresholds: z.array(z.unknown()).optional(), operationApprovers: z.record(z.string(), z.number()).optional() }) }).parse(evidenceResult(await owner.get(path), 'wallet scenario governance policy')).policy;
     await owner.reauthenticate(persona.password);
     evidenceResult(await owner.put(path, {
       expectedVersion: current.version,

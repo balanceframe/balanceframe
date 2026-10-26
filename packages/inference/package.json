@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "@balanceframe/protocol-generated": "workspace:*",
-    "zod": "^3.0.0"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

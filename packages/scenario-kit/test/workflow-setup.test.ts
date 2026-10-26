@@ -645,12 +645,12 @@ describe('Exact merchant proposal actor initialization', () => {
     requesterActorId: z.string(), requesterMembershipId: z.string(), requiredApprovers: z.number().int(),
     approvers: z.array(z.object({ actorId: z.string() }).passthrough()),
     privateEnvelopeVisible: z.boolean(), canApprove: z.boolean(), canExecute: z.boolean(),
-    payload: z.record(z.unknown()), preconditions: z.record(z.unknown()),
+    payload: z.record(z.string(), z.unknown()), preconditions: z.record(z.string(), z.unknown()),
   }).passthrough();
   const queue = z.object({
     items: z.array(z.object({
       reviewItem: z.object({ id: z.string(), transactionId: z.string() }).passthrough(),
-      evidence: z.object({ merchantEvidence: z.object({ reviewContext: z.record(z.unknown()) }).passthrough().optional() }).passthrough(),
+      evidence: z.object({ merchantEvidence: z.object({ reviewContext: z.record(z.string(), z.unknown()) }).passthrough().optional() }).passthrough(),
     }).passthrough()),
   });
   const identity = (resource: GovernanceResourceRef) => JSON.stringify([resource.resourceKind, resource.resourceId]);

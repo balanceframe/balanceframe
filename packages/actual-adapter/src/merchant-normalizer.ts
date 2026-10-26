@@ -87,8 +87,8 @@ const rawSourceFields = transactionFields.pick({ imported_id: true, imported_pay
 const payeeFields = z.object({ id, name: sourceText, transfer_acct: nullableId });
 const categoryFields = z.object({ id, name: sourceText, group_id: nullableId, is_income: z.boolean().optional(), hidden: z.boolean().optional(), tombstone: z.boolean().optional() });
 const groupFields = z.object({ id, name: sourceText, is_income: z.boolean().optional(), hidden: z.boolean().optional() });
-const conditionFields = z.object({ field: id, op: id, value: z.unknown() }).passthrough();
-const actionFields = z.object({ field: id.optional(), op: id, value: z.unknown() }).passthrough();
+const conditionFields = z.object({ field: id, op: id, value: z.unknown().optional() }).passthrough();
+const actionFields = z.object({ field: id.optional(), op: id, value: z.unknown().optional() }).passthrough();
 const ruleFields = z.object({ id, stage: z.enum(['pre', 'post']).nullable(), conditionsOp: z.enum(['and', 'or']), conditions: z.array(conditionFields), actions: z.array(actionFields), tombstone: z.boolean().optional(), name: sourceText.optional() }).passthrough();
 const scheduleFields = z.object({
   id, account: nullableId, payee: nullableId, rule: nullableId, completed: z.boolean().optional(),
@@ -104,7 +104,7 @@ const scheduleFields = z.object({
     skipWeekend: z.boolean().nullish(), weekendSolveMode: z.enum(['before', 'after']).nullish(),
   }).strict()]).nullish(),
 }).passthrough();
-const collection = <T extends z.ZodTypeAny>(items: T) => z.union([
+const collection = <T extends z.ZodType>(items: T) => z.union([
   z.object({ state: z.enum(['complete', 'partial']), items: z.array(items) }).strict(),
   z.object({ state: z.literal('unavailable'), items: z.tuple([]) }).strict(),
 ]);

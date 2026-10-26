@@ -23,7 +23,7 @@ const portableRuleSchema = z.object({ stage: z.literal('post'), conditionsOp: z.
 const nativeRuleSchema = z.object({ id: z.string(), stage: z.string().nullable(), conditionsOp: z.string(), conditions: z.array(z.unknown()), actions: z.array(z.unknown()) }).passthrough();
 const simulationSchema = z.object({
   name: z.string(), transactionsMatched: z.number().int(), transactionsAffected: z.array(z.string()),
-  categoryDistribution: z.record(z.number().int()), conflicts: z.array(z.string()),
+  categoryDistribution: z.record(z.string(), z.number().int()), conflicts: z.array(z.string()),
   examples: z.array(z.object({ txId: z.string(), payee: z.string().nullable(), amount: moneySchema, currentCategory: z.string().nullable(), wouldChange: z.boolean() })),
 }).passthrough();
 const proposalSchema = z.object({

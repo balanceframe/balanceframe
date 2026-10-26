@@ -9,7 +9,7 @@ import type { LoadedScenario } from '../../src/loader.js';
 import { scenarioRequest, withScenario } from './support.js';
 
 const timeout = 180_000;
-const object = z.record(z.unknown());
+const object = z.record(z.string(), z.unknown());
 const money = (minorUnits: string) => ({ minorUnits, currency: 'USD' });
 const statementSelector = z.object({
   statementDocumentId: z.string(), wallet: z.object({ kind: z.literal('existing'), walletId: z.string() }),
