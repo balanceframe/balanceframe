@@ -1,3 +1,6 @@
+import { createServer, request as httpRequest } from 'node:http';
+import { once } from 'node:events';
+import { consequentialActionPlanSchema } from '@balanceframe/protocol-generated/validators';
 import type * as H3 from 'h3';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
@@ -324,6 +327,86 @@ afterAll(() => {
 });
 
 describe('consequential-action proposal API trust boundary', () => {
+  it('preserves server action failure HTTP status while client validation and selection denial remain bounded', async () => {
+    const h3 = await vi.importActual<typeof H3>('h3');
+    const previousBodyReader = mocks.readBody.getMockImplementation()!;
+    mocks.readBody.mockImplementation(async (request) => h3.readBody(request as unknown as H3.H3Event));
+    const app = h3.createApp();
+    app.use(h3.defineEventHandler((request) => {
+      const actor = request.node.req.headers['x-test-actor'] === MEMBER_ID ? MEMBER_ID : OWNER_ID;
+      const trusted = event(undefined, spaceId, actor);
+      request.context.auth = trusted.context.auth;
+      request.context.runtimeConfig = trusted.context.runtimeConfig;
+    }));
+    app.use('/api/proposal/action', createActionProposal);
+    const server = createServer(h3.toNodeListener(app));
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Owned loopback listener required');
+      const post = async (body: unknown, selected = spaceId, actor = OWNER_ID) => {
+        const response = await new Promise<{ status: number; text: string }>((resolve, reject) => {
+          const request = httpRequest(`http://127.0.0.1:${address.port}/api/proposal/action`, {
+            method: 'POST', timeout: 5_000,
+            headers: { 'content-type': 'application/json', origin: ORIGIN, 'x-balanceframe-space': selected, 'x-test-actor': actor },
+          }, (incoming) => {
+            let text = '';
+            incoming.setEncoding('utf8').on('data', (chunk: string) => { text += chunk; });
+            incoming.on('end', () => resolve({ status: incoming.statusCode!, text }));
+            incoming.on('error', reject);
+          });
+          request.on('timeout', () => request.destroy(new Error('Owned HTTP request timed out')));
+          request.on('error', reject);
+          request.end(JSON.stringify(body));
+        });
+        expect(response.text).not.toContain(PRIVATE_NATIVE_FACT);
+        return { status: response.status, envelope: JSON.parse(response.text) };
+      };
+      mocks.actionService.propose.mockResolvedValue(actionProjection());
+      vi.spyOn(store, 'getProposalApprovalSummary').mockResolvedValue(approvalSummary());
+      const valid = await post(validIntent);
+      expect(valid.status).toBe(200);
+      expect(valid.envelope.status).toBe('ok');
+      expect(mocks.actionService.propose).toHaveBeenCalledOnce();
+      const malformed = await post({});
+      expect(malformed.status).toBe(400);
+      expect(malformed.envelope.error.code).toBe('INVALID_BODY');
+      expect(mocks.actionService.propose).toHaveBeenCalledOnce();
+
+      // The independent real-service probe establishes this native-plan failure is reachable.
+      const versionSchema = consequentialActionPlanSchema.pick({ version: true });
+      expect(versionSchema.parse({ version: '1' })).toEqual({ version: '1' });
+      const invalidPlan = versionSchema.safeParse({ version: 42 });
+      expect(invalidPlan.success).toBe(false);
+      if (invalidPlan.success) throw new Error('Malformed native version must be rejected');
+      expect(invalidPlan.error.issues[0]).toMatchObject({ code: 'invalid_value', path: ['version'] });
+      mocks.actionService.propose.mockRejectedValue(invalidPlan.error);
+      const unavailable = await post(validIntent);
+      expect(unavailable.status).toBe(503);
+      expect(unavailable.envelope).toMatchObject({ status: 'error', result: null, error: { code: 'ACTION_UNAVAILABLE', retryable: true } });
+      expect(mocks.actionService.propose).toHaveBeenCalledTimes(2);
+      expect(mocks.actionService.execute).not.toHaveBeenCalled();
+      expect(await store.listProposals({ budgetId, operations: ['consequential_action'] })).toEqual([]);
+
+      const foreign = store.governance.createSpace({ actorId: OWNER_ID, name: 'Unrelated HTTP action space', kind: 'shared', now: NOW, auth: ownerControl() });
+      const serviceCalls = mocks.createActionService.mock.calls.length;
+      const bodyReads = mocks.readBody.mock.calls.length;
+      const denied = await post(validIntent, foreign.id, MEMBER_ID);
+      expect(denied.status).toBe(403);
+      expect(denied.envelope.error.code).toBe('FORBIDDEN');
+      expect(mocks.createActionService.mock.calls.length).toBe(serviceCalls);
+      expect(mocks.readBody.mock.calls.length).toBe(bodyReads);
+      expect(mocks.actionService.propose).toHaveBeenCalledTimes(2);
+      expect(await store.listProposals({ budgetId, operations: ['consequential_action'] })).toEqual([]);
+    } finally {
+      try {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      } finally { mocks.readBody.mockImplementation(previousBodyReader); }
+    }
+  });
+
   it.each([
     'actor', 'actorId', 'auth', 'space', 'spaceId', 'budgetId', 'source', 'plan', 'hash',
     'payloadHash', 'actionHash', 'nativeActionHash', 'idempotencyKey', 'proofToken',
@@ -417,6 +500,22 @@ describe('consequential-action proposal API trust boundary', () => {
     }));
     expect(response.status).toBe('ok');
     expect(response.result!.proposal.expiresAt).toBe(actionProjection().expiresAt);
+  });
+
+  it.each([
+    ['configured budget does not match', 409, 'SPACE_CONNECTION_MISMATCH'],
+    ['Native binding unavailable', 501, 'NATIVE_UNAVAILABLE'],
+  ] as const)('preserves proposal failure %s without publishing private details or executing', async (message, status, code) => {
+    mocks.actionService.propose.mockRejectedValue(new Error(message, { cause: PRIVATE_NATIVE_FACT }));
+    const request = event(validIntent);
+    const response = await createActionProposal(request);
+    expect(request.node.res.statusCode).toBe(status);
+    expect(response).toMatchObject({ status: 'error', result: null, error: { code, retryable: false } });
+    expect(mocks.actionService.propose).toHaveBeenCalledOnce();
+    expect(mocks.actionService.execute).not.toHaveBeenCalled();
+    expect(mocks.actionService.reconcile).not.toHaveBeenCalled();
+    expect(JSON.stringify(response)).not.toContain(PRIVATE_NATIVE_FACT);
+    expect(await store.listProposals({ budgetId, operations: ['consequential_action'] })).toEqual([]);
   });
 
   it('reports an unsafe native reallocation as a non-retryable state conflict', async () => {

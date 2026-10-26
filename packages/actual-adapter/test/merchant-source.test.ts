@@ -90,6 +90,17 @@ function expectInvalid(input: ActualMerchantSourceInput, code: ActualMerchantSou
 }
 
 describe('Actual 26.10 merchant source normalization', () => {
+  it('preserves Actual rules whose operations omit an opaque value', () => {
+    const rule = { id: 'rule-value-absent', stage: 'pre', conditionsOp: 'and',
+      conditions: [{ field: 'payee_name', op: 'is' }], actions: [{ op: 'delete' }] };
+    const normalized = normalizeActualMerchantSource(source([], {
+      rules: { state: 'complete', items: [rule] as unknown as ActualMerchantSourceInput['rules']['items'] },
+    }));
+    expect(normalized.rules).toHaveLength(1);
+    expect(normalized.rules[0]!.trigger).toEqual({ stage: rule.stage, conditionsOp: rule.conditionsOp, conditions: rule.conditions });
+    expect(normalized.rules[0]!.actions).toEqual(rule.actions);
+  });
+
   it('reuses the canonical imported-payee specimen without reconstructing a lossy legacy transaction', () => {
     const input = source();
     const before = structuredClone(input);

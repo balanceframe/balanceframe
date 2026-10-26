@@ -53,7 +53,7 @@ const ruleSimulationSchema = z.object({
   name: z.string(),
   transactionsMatched: z.number().int().nonnegative(),
   transactionsAffected: z.array(z.string()),
-  categoryDistribution: z.record(z.number().int().nonnegative()),
+  categoryDistribution: z.record(z.string(), z.number().int().nonnegative()),
   conflicts: z.array(z.string()),
   examples: z.array(
     z.object({
