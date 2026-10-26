@@ -60,7 +60,7 @@ const id = z.string().min(1).max(512).refine((v) => v.trim() === v && !/[^\u0020
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const analyzeInput = z.object({ transactionIds: z.array(id).max(250000).optional(), cursor: id.nullable().optional(), limit: z.number().int().min(1).max(1000).optional(), factsHash: id.optional() }).strict();
 const decisionBase = { id:id.refine((value) => Buffer.byteLength(value,'utf8') <= 256), evidenceKey: id, evidenceRevision: id, expectedVersion: count.max(4294967294), visibility: z.enum(['private','shared']) };
-const publicSourceTransactionSchema = merchantTransactionSchema.innerType().pick({ id:true,accountId:true,payeeId:true,payeeName:true,categoryId:true,amount:true,date:true,importedPayee:true,description:true,verboseTitle:true,notes:true }).strict();
+const publicSourceTransactionSchema = z.object(merchantTransactionSchema.shape).pick({ id:true,accountId:true,payeeId:true,payeeName:true,categoryId:true,amount:true,date:true,importedPayee:true,description:true,verboseTitle:true,notes:true }).strict();
 const sourceTransactionProjection = publicSourceTransactionSchema.strip();
 const publicAliasDecisionSchema = z.object({ id,sourceField:z.enum(['importedPayee','description','verboseTitle','notes','payeeName']),targetPayeeId:id,accountId:id.nullable(),state:z.enum(['accepted','rejected','revoked']),version:count,updatedAt:z.string().datetime({offset:true}),visibility:z.enum(['private','shared']) }).strict();
 const ruleReviewContextSchema = z.object({

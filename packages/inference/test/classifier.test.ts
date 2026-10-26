@@ -24,6 +24,7 @@ import type {
 import type { ProviderAdapter } from '../src/providers/types';
 import { LocalProvider } from '../src/providers/local';
 import { OpenAIProvider } from '../src/providers/openai';
+import { classificationResultSchema } from '../src/validators';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -618,6 +619,51 @@ describe('calls providers only for candidates', () => {
 // ---------------------------------------------------------------------------
 
 describe('validates provider output with Zod', () => {
+  it('preserves validation issue paths and returns an error suggestion without accepting malformed provider output', async () => {
+    const malformed = { ...classifyResult(), categoryId: 42, confidence: 2 };
+    const parsed = classificationResultSchema.safeParse(malformed);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('Malformed provider output must be rejected');
+    expect(parsed.error.issues.map(({ code, path }) => ({ code, path }))).toEqual([
+      { code: 'invalid_type', path: ['categoryId'] }, { code: 'too_big', path: ['confidence'] },
+    ]);
+    const provider = createFakeLocalProvider({ classify: vi.fn().mockResolvedValue(malformed) });
+    const orchestrator = createAuthorizedOrchestrator({
+      providers: [provider], policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }), redactor: createRedactor(), promptVersion: 'prompt-v1',
+    });
+    const [suggestion] = await orchestrator.classify([makeCandidate()]);
+    const message = `provider output validation failed: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`;
+    expect(suggestion.reasonCodes).toEqual(['Error']);
+    expect(suggestion.errors).toEqual(['Error', message]);
+    expect(suggestion.rationale).toBe(message);
+    expect(suggestion.proposedCategoryId).toBe('');
+    expect(suggestion.confidence).toBe(0);
+  });
+
+  it('pins the approved schema-error hash while valid and non-schema failure hashes remain stable', async () => {
+    const output = { confidence: 0.87, alternatives: [], rationale: 'synthetic', model: 'synthetic' };
+    const provider = createFakeLocalProvider({ classify: vi.fn()
+      .mockResolvedValueOnce({ ...output, categoryId: 42, confidence: 2 })
+      .mockResolvedValueOnce({ ...output, categoryId: 'category-food' })
+      .mockResolvedValueOnce({ ...output, categoryId: 'category-hidden' }) });
+    const orchestrator = createAuthorizedOrchestrator({
+      providers: [provider], policy: createPolicyEngine({ capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }], policyVersion: '1',
+      }), redactor: createRedactor(), promptVersion: '1',
+    });
+    const candidate = makeCandidate({ transactionId: 'synthetic-tx', transactionVersion: '1', budgetId: 'synthetic-budget', allowedCategoryIds: ['category-food'] });
+    const [invalid] = await orchestrator.classify([candidate]);
+    expect(invalid).toMatchObject({ proposedCategoryId: '', reasonCodes: ['Error'], payloadHash: 'ffaa1897eb5972c08d9de8e3f4464cd6474eeb9e5baf70c941ad66785bca0d92' });
+    const [valid] = await orchestrator.classify([candidate]);
+    expect(valid).toMatchObject({ proposedCategoryId: 'category-food', errors: [], payloadHash: 'a103c152fe36a93b6571ca2515407648f526bd9cf7d707d5b654e3b8c6874b2d' });
+    const [unallowed] = await orchestrator.classify([candidate]);
+    expect(unallowed).toMatchObject({ proposedCategoryId: '', reasonCodes: ['CATEGORY_NOT_ALLOWED'], payloadHash: '55c1ace94378839ebfbfc634e79b43e06345ad6cc1f157fcf414b62bb3a5969b' });
+  });
+
   it('accepts valid provider output', async () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),

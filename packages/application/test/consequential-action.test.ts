@@ -1601,6 +1601,26 @@ afterEach(() => {
 });
 
 describe('common governed consequential-action service', () => {
+  it('reads persisted preconditions with the historical UUID grammar and preserves supplemental null', async () => {
+    const created = await proposal(fixture);
+    const stored = await fixture.store.getProposal(created.id);
+    if (!stored || stored.operation !== 'consequential_action') throw new Error('Stored action proposal required');
+    const preconditions = JSON.parse(stored.preconditions) as Record<string, unknown>;
+    const parser = fixture.service as unknown as { parsePreconditions(value: unknown): unknown };
+    for (const sourceReference of ['ffffffff-ffff-ffff-ffff-ffffffffffff', '00000000-0000-0000-0000-000000000000']) {
+      const persisted = { ...preconditions, sourceReference };
+      expect(parser.parsePreconditions(JSON.stringify(persisted))).toEqual(persisted);
+    }
+    const absentFacts = { ...preconditions, supplemental: null, supplementalHash: createHash('sha256').update('null').digest('hex') };
+    expect(parser.parsePreconditions(JSON.stringify(absentFacts))).toEqual(absentFacts);
+    for (const sourceReference of ['invalid', 'ffffffff-ffff-ffff-ffff-fffffffffff', 'gfffffff-ffff-ffff-ffff-ffffffffffff']) {
+      expect(() => parser.parsePreconditions({ ...preconditions, sourceReference })).toThrow();
+    }
+    const missing = { ...preconditions };
+    delete missing.supplemental;
+    expect(() => parser.parsePreconditions(missing)).toThrow();
+  });
+
   it.each([
     ['analysis_only', false],
     ['recommend_actions', false],

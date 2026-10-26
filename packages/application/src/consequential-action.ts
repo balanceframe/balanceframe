@@ -328,14 +328,15 @@ const storedPreconditionsSchema = z
             accountId: z.string(),
             transactionId: z.string(),
             fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-            parent: z.record(z.unknown()),
-            children: z.array(z.record(z.unknown())),
+            parent: z.record(z.string(), z.unknown()),
+            children: z.array(z.record(z.string(), z.unknown())),
             transaction: canonicalTransactionSchema,
           })
           .strict(),
       )
       .optional(),
-    sourceReference: z.string().uuid(),
+    // Persisted references use the original UUID grammar, including nil and non-RFC variants.
+    sourceReference: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
     nativeActionHash: z.string().regex(/^[0-9a-f]{64}$/),
     nativeSource: consequentialActionPlanSchema.shape.source,
     decisionCardPolicyHash: z.string().min(1),
@@ -345,7 +346,7 @@ const storedPreconditionsSchema = z
         policyHash: z.string().min(1),
       })
       .strict(),
-    supplemental: z.unknown(),
+    supplemental: z.unknown().optional(),
     supplementalHash: z.string().regex(/^[0-9a-f]{64}$/),
     decision: actionDecisionSchema.nullable(),
     sessionCart: pinnedDecisionSchema.nullable(),

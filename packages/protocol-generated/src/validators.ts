@@ -97,7 +97,7 @@ const requiredRuleValueSchema = z
 export const ruleSchema = z.object({
   id: z.string(),
   name: z.string(),
-  order: z.number().int().nonnegative(),
+  order: z.number().refine(Number.isInteger, 'Expected integer').nonnegative(),
   trigger: requiredRuleValueSchema,
   actions: requiredRuleValueSchema,
   inactive: z.boolean(),
@@ -123,7 +123,7 @@ export const budgetCategorySchema = z.object({
 export const budgetMonthSchema = z.object({
   id: z.string(),
   month: z.string().regex(/^\d{4}-\d{2}$/),
-  categories: z.record(budgetCategorySchema),
+  categories: z.record(z.string(), budgetCategorySchema),
 });
 
 export const tagSchema = z.object({
@@ -163,7 +163,7 @@ export const suggestionSchema = z
     transactionId: z.string(),
     proposedCategoryId: z.string(),
     categoryName: z.string(),
-    confidence: z.number(),
+    confidence: z.union([z.number(), z.literal(Infinity), z.literal(-Infinity)]),
     reasonCodes: z.array(z.string()),
     evidence: z.array(z.string()),
     spaceId: z.string().nullable().optional(),
@@ -196,10 +196,10 @@ export const suggestionSchema = z
       )
       .optional(),
     errors: z.array(z.string()).optional(),
-    deterministicEvidence: z.record(z.unknown()).optional(),
+    deterministicEvidence: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
-export const canonicalTransactionSchema: z.ZodTypeAny = z.lazy(() =>
+export const canonicalTransactionSchema: z.ZodType<import('./index.js').Transaction> = z.lazy(() =>
   z.object({
     id: z.string(),
     accountId: z.string(),
@@ -842,7 +842,7 @@ export const monthlyProjectionSchema = z
 
 export const cashFlowProjectionResponseSchema = z
   .object({
-    projectionMonths: z.number().int(),
+    projectionMonths: z.number().refine(Number.isInteger, 'Expected integer'),
     monthlyProjections: z.array(monthlyProjectionSchema),
   })
   .strict();
@@ -870,7 +870,7 @@ export const targetHealthResultSchema = z
 export const financialStateLabelSchema = z
   .object({
     label: z.enum(['healthy', 'stable', 'at_risk', 'critical']),
-    score: z.number(),
+    score: z.union([z.number(), z.literal(Infinity), z.literal(-Infinity)]),
     reasonCodes: z.array(z.string()),
   })
   .strict();
@@ -1211,8 +1211,8 @@ export const decisionDataPolicySchema = z
     pendingMode: pendingModeSchema,
     uncategorizedMode: uncategorizedModeSchema,
     unclearedMode: unclearedModeSchema,
-    maxBankSyncAgeMinutes: z.number().int().nonnegative().nullable(),
-    maxBudgetSnapshotAgeMinutes: z.number().int().nonnegative().nullable(),
+    maxBankSyncAgeMinutes: z.number().refine(Number.isInteger, 'Expected integer').nonnegative().nullable(),
+    maxBudgetSnapshotAgeMinutes: z.number().refine(Number.isInteger, 'Expected integer').nonnegative().nullable(),
     accountOverrides: accountOverridesSchema,
   })
   .strict();
@@ -2357,7 +2357,7 @@ const actionPostcondition = z.union([
 
 const dispatchPrecondition = z
   .object({
-    atomIndex: z.number().int().nonnegative(),
+    atomIndex: z.number().refine(Number.isInteger, 'Expected integer').nonnegative(),
     accountBalances: z
       .array(
         z

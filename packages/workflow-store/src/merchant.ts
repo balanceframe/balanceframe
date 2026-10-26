@@ -114,6 +114,12 @@ function canonical(value: unknown): string {
   if (value !== null && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;
   return JSON.stringify(value) ?? 'null';
 }
+// Stored validation failures describe unavailable server state at the HTTP boundary.
+function decodeStored<T>(schema: z.ZodType<T>, serialized: string): T {
+  const result = schema.safeParse(JSON.parse(serialized) as unknown);
+  if (!result.success) throw new Error('Stored merchant state is unavailable');
+  return result.data;
+}
 function same(a: unknown, b: unknown): boolean { return canonical(a) === canonical(b); }
 function active(lease: string, now: string): boolean { return Date.parse(lease) > Date.parse(now); }
 function lease(now: string): string { return new Date(Date.parse(now) + 30000).toISOString(); }
@@ -148,7 +154,7 @@ export class MerchantWorkflow {
   }
   private policyValue(scope: MerchantScope): MerchantPolicy | null {
     const row = this.db.prepare('SELECT value FROM merchant_policies WHERE scope_key=?').get(scopeKey(scope)) as ValueRow | undefined;
-    return row ? policySchema.parse(JSON.parse(row.value)) : null;
+    return row ? decodeStored(policySchema, row.value) : null;
   }
   private external(scope: MerchantScope, policyVersion: number, keyHash?: string, key?: MerchantCacheKey): boolean {
     const policy = this.policyValue(scope);
@@ -158,11 +164,11 @@ export class MerchantWorkflow {
     return this.db.prepare('SELECT * FROM merchant_research_attempts WHERE scope_key=? AND id=?').get(scopeKey(scope), identity) as AttemptRow | undefined;
   }
   private attemptValue(row: AttemptRow, scope: MerchantScope): MerchantResearchAttempt {
-    const outcome = row.outcome === null ? null : storedOutcomeSchema.parse(JSON.parse(row.outcome));
-    return { id: row.id, scope: { ...scope }, phase: row.phase, generation: row.generation, policyVersion: row.policy_version, reservedCostAtoms: row.reserved_atoms, settledCostAtoms: row.settled_atoms, billingCurrency: row.billing_currency, tariffVersion: row.tariff_version, createdAt: row.created_at, leaseExpiresAt: row.lease_expires_at, dispatchedAt: row.dispatched_at, invocationEvidence: outcome !== null && 'workerEvidence' in outcome && outcome.workerEvidence === 'not_invoked' ? 'not_invoked' : null, claimToken: row.claim_token, visibility: visibilitySchema.parse(JSON.parse(row.visibility)), sourceRefs: refsSchema.parse(JSON.parse(row.source_refs)) };
+    const outcome = row.outcome === null ? null : decodeStored(storedOutcomeSchema, row.outcome);
+    return { id: row.id, scope: { ...scope }, phase: row.phase, generation: row.generation, policyVersion: row.policy_version, reservedCostAtoms: row.reserved_atoms, settledCostAtoms: row.settled_atoms, billingCurrency: row.billing_currency, tariffVersion: row.tariff_version, createdAt: row.created_at, leaseExpiresAt: row.lease_expires_at, dispatchedAt: row.dispatched_at, invocationEvidence: outcome !== null && 'workerEvidence' in outcome && outcome.workerEvidence === 'not_invoked' ? 'not_invoked' : null, claimToken: row.claim_token, visibility: decodeStored(visibilitySchema, row.visibility), sourceRefs: decodeStored(refsSchema, row.source_refs) };
   }
   private admittedAttempt(input: MerchantViewAccess, row: AttemptRow): boolean {
-    return this.permitted(input, refsSchema.parse(JSON.parse(row.source_refs)), visibilitySchema.parse(JSON.parse(row.visibility))) && row.generation === input.expectedGeneration && row.content_deleted === 0;
+    return this.permitted(input, decodeStored(refsSchema, row.source_refs), decodeStored(visibilitySchema, row.visibility)) && row.generation === input.expectedGeneration && row.content_deleted === 0;
   }
   private reconcile(now: string): void {
     // A durable dispatch marker is the billing boundary; expired unsent work cannot retain quota.
@@ -181,7 +187,7 @@ export class MerchantWorkflow {
       const rows = this.db.prepare('SELECT value FROM merchant_decisions WHERE scope_key=? AND visibility_hash=? AND id>? AND (? IS NULL OR kind=?) ORDER BY id').all(scopeKey(input.scope), input.visibility.hash, input.cursor ?? '', input.kind ?? null, input.kind ?? null) as ValueRow[];
       const records: MerchantDecision[] = [];
       for (const row of rows) {
-        const value = decisionSchema.parse(JSON.parse(row.value));
+        const value = decodeStored(decisionSchema, row.value);
         if (!this.permitted(input, value.sourceRefs, value.visibility)) return { records: [], nextCursor: null };
         if (value.generation === input.expectedGeneration) records.push(value);
         if (records.length > input.limit) break;
@@ -198,7 +204,7 @@ export class MerchantWorkflow {
     return this.transaction(() => {
       if (!this.permitted(input, input.sourceRefs, input.visibility)) return null;
       const row = this.db.prepare('SELECT value FROM merchant_decisions WHERE scope_key=? AND visibility_hash=? AND id=?').get(scopeKey(input.scope), input.visibility.hash, input.id) as ValueRow | undefined;
-      const previous = row ? decisionSchema.parse(JSON.parse(row.value)) : null;
+      const previous = row ? decodeStored(decisionSchema, row.value) : null;
       if ((previous?.version ?? 0) !== input.expectedVersion || (previous && !this.authorize(input, previous.sourceRefs, previous.visibility))) return null;
       this.ensure(input.scope);
       const value: MerchantDecision = { id: input.id, scope: input.scope, payload: input.payload, state: input.state, actorId: input.actorId, version: input.expectedVersion + 1, updatedAt: input.now, generation: input.expectedGeneration, visibility: input.visibility, sourceRefs: input.sourceRefs };
@@ -223,7 +229,7 @@ export class MerchantWorkflow {
       this.db.prepare('INSERT INTO merchant_policies VALUES (?,?) ON CONFLICT(scope_key) DO UPDATE SET value=excluded.value').run(scopeKey(input.scope), JSON.stringify(policy));
       // Confirmed decisions survive consent changes; their authority is still checked on every read.
       const decisions = this.db.prepare('SELECT visibility_hash,id,value FROM merchant_decisions WHERE scope_key=?').all(scopeKey(input.scope)) as (ValueRow & { visibility_hash: string; id: string })[];
-      for (const decision of decisions) { const content = decisionSchema.parse(JSON.parse(decision.value)); content.generation = policy.generation; this.db.prepare('UPDATE merchant_decisions SET value=? WHERE scope_key=? AND visibility_hash=? AND id=?').run(JSON.stringify(content), scopeKey(input.scope), decision.visibility_hash, decision.id); }
+      for (const decision of decisions) { const content = decodeStored(decisionSchema, decision.value); content.generation = policy.generation; this.db.prepare('UPDATE merchant_decisions SET value=? WHERE scope_key=? AND visibility_hash=? AND id=?').run(JSON.stringify(content), scopeKey(input.scope), decision.visibility_hash, decision.id); }
       return policy;
     });
   }
@@ -233,7 +239,7 @@ export class MerchantWorkflow {
     return this.transaction(() => {
       const row = this.db.prepare('SELECT value FROM merchant_evidence WHERE scope_key=? AND visibility_hash=? AND evidence_key=?').get(scopeKey(input.scope), input.visibility.hash, input.key) as ValueRow | undefined;
       if (!row) return null;
-      const value = evidenceSchema.parse(JSON.parse(row.value));
+      const value = decodeStored(evidenceSchema, row.value);
       return this.permitted(input, value.sourceRefs, value.visibility) && value.generation === input.expectedGeneration && active(value.expiresAt, input.now) && value.policyVersion === (this.policyValue(input.scope)?.version ?? 0) ? value : null;
     });
   }
@@ -244,7 +250,7 @@ export class MerchantWorkflow {
     return this.transaction(() => {
       if (!this.permitted(input, proposed.sourceRefs, proposed.visibility) || !active(proposed.expiresAt, input.now) || proposed.policyVersion !== (this.policyValue(input.scope)?.version ?? 0)) return null;
       const row = this.db.prepare('SELECT value FROM merchant_evidence WHERE scope_key=? AND visibility_hash=? AND evidence_key=?').get(scopeKey(input.scope), input.visibility.hash, proposed.key) as ValueRow | undefined;
-      const previous = row ? evidenceSchema.parse(JSON.parse(row.value)) : null;
+      const previous = row ? decodeStored(evidenceSchema, row.value) : null;
       if ((previous?.revision ?? null) !== input.expectedRevision) return null;
       if (previous?.revision === proposed.revision && !same(evidenceFactsSchema.parse(previous), evidenceFactsSchema.parse(proposed)))
         throw new Error('Changed evidence facts require a new revision');
@@ -261,7 +267,7 @@ export class MerchantWorkflow {
     return this.transaction(() => {
       const row = this.db.prepare('SELECT value FROM merchant_enrichment_cache WHERE scope_key=? AND key_hash=?').get(scopeKey(input.scope), digest(input.key)) as ValueRow | undefined;
       if (!row) return null;
-      const value = merchantEnrichmentSchema.parse(JSON.parse(row.value));
+      const value = decodeStored(merchantEnrichmentSchema, row.value);
       return this.permitted(input, value.sourceRefs, value.visibility) && value.generation === input.expectedGeneration && this.external(input.scope, value.policyVersion, undefined, input.key) && active(value.expiresAt, input.now) ? value : null;
     });
   }
@@ -273,10 +279,10 @@ export class MerchantWorkflow {
       if (!this.permitted(input, proposed.sourceRefs, proposed.visibility)) return null;
       const row = this.attemptRow(input.scope, input.attemptId);
       const policy = this.policyValue(input.scope);
-      if (!row || row.content_deleted || row.generation !== input.expectedGeneration || row.phase !== 'dispatched' || row.claim_token !== input.claimToken || !active(row.lease_expires_at, input.now) || !this.external(input.scope, proposed.policyVersion, row.key_hash, proposed.key) || row.policy_version !== proposed.policyVersion || !same(visibilitySchema.parse(JSON.parse(row.visibility)), proposed.visibility) || !same(refsSchema.parse(JSON.parse(row.source_refs)), proposed.sourceRefs) || !active(proposed.expiresAt, input.now) || !policy || Date.parse(proposed.expiresAt) - Date.parse(proposed.retrievedAt) > policy.cacheTtlHours * 3600000 || Date.parse(proposed.retrievedAt) > Date.parse(input.now)) return null;
+      if (!row || row.content_deleted || row.generation !== input.expectedGeneration || row.phase !== 'dispatched' || row.claim_token !== input.claimToken || !active(row.lease_expires_at, input.now) || !this.external(input.scope, proposed.policyVersion, row.key_hash, proposed.key) || row.policy_version !== proposed.policyVersion || !same(decodeStored(visibilitySchema, row.visibility), proposed.visibility) || !same(decodeStored(refsSchema, row.source_refs), proposed.sourceRefs) || !active(proposed.expiresAt, input.now) || !policy || Date.parse(proposed.expiresAt) - Date.parse(proposed.retrievedAt) > policy.cacheTtlHours * 3600000 || Date.parse(proposed.retrievedAt) > Date.parse(input.now)) return null;
       const existing = this.db.prepare('SELECT value,attempt_id FROM merchant_enrichment_cache WHERE scope_key=? AND key_hash=?').get(scopeKey(input.scope), row.key_hash) as (ValueRow & { attempt_id: string }) | undefined;
       const value: MerchantEnrichment = { ...proposed, generation: input.expectedGeneration };
-      if (existing?.attempt_id === row.id) return same(merchantEnrichmentSchema.parse(JSON.parse(existing.value)), value) ? merchantEnrichmentSchema.parse(JSON.parse(existing.value)) : null;
+      if (existing?.attempt_id === row.id) return same(decodeStored(merchantEnrichmentSchema, existing.value), value) ? decodeStored(merchantEnrichmentSchema, existing.value) : null;
       this.db.prepare('INSERT INTO merchant_enrichment_cache VALUES (?,?,?,?,?,?) ON CONFLICT(scope_key,key_hash) DO UPDATE SET attempt_id=excluded.attempt_id,expires_at=excluded.expires_at,retrieved_at=excluded.retrieved_at,value=excluded.value').run(scopeKey(input.scope), row.key_hash, row.id, new Date(proposed.expiresAt).toISOString(), new Date(proposed.retrievedAt).toISOString(), JSON.stringify(value));
       return value;
     });
@@ -316,7 +322,7 @@ export class MerchantWorkflow {
       const day = input.now.slice(0, 10); const month = input.now.slice(0, 7);
       // Exact persisted reservations are the ledger; no lossy SQL SUM/REAL conversion.
       const rows = this.db.prepare("SELECT * FROM merchant_research_attempts WHERE (day_window=? OR month_window=?) AND phase!='known_failed'").all(day, month) as AttemptRow[];
-      const ledger = rows.map((row) => ({ row, buckets: bucketListSchema.parse(JSON.parse(row.buckets)) }));
+      const ledger = rows.map((row) => ({ row, buckets: decodeStored(bucketListSchema, row.buckets) }));
       const constrained = buckets.map((bucket) => bucket.kind === 'budget' ? { ...bucket, maxSearchesPerDay: Math.min(bucket.maxSearchesPerDay, policy.maxSearchesPerDay), maxSpendMinorUnitsPerMonth: Math.min(bucket.maxSpendMinorUnitsPerMonth, policy.maxSpendMinorUnitsPerMonth) } : bucket);
       for (const bucket of constrained) {
         let daily = 0; let monthly = 0n;
@@ -342,7 +348,7 @@ export class MerchantWorkflow {
     validateAccess(input, true); id.parse(input.id);
     return this.transaction(() => {
       const row = this.attemptRow(input.scope, input.id);
-      if (!row || !this.permitted(input, refsSchema.parse(JSON.parse(row.source_refs)), visibilitySchema.parse(JSON.parse(row.visibility))) || row.generation !== input.expectedGeneration || row.content_deleted) return null;
+      if (!row || !this.permitted(input, decodeStored(refsSchema, row.source_refs), decodeStored(visibilitySchema, row.visibility)) || row.generation !== input.expectedGeneration || row.content_deleted) return null;
       this.reconcile(input.now);
       return this.attemptValue(this.attemptRow(input.scope, input.id)!, input.scope);
     });
@@ -368,14 +374,14 @@ export class MerchantWorkflow {
       this.reconcile(input.now);
       if (row.phase !== 'reserved' || row.claim_token !== input.claimToken || !active(row.lease_expires_at, input.now) || !this.external(input.scope, row.policy_version) ||
         row.day_window !== input.now.slice(0,10) || row.month_window !== input.now.slice(0,7)) return false;
-      const buckets = bucketListSchema.parse(JSON.parse(row.buckets));
+      const buckets = decodeStored(bucketListSchema, row.buckets);
       const controlling = buckets.filter((bucket) => bucket.kind === 'installation' || bucket.kind === 'credential');
       // Deletion changes phase, not whether an unsettled owner may still be executing.
       const running = this.db.prepare("SELECT buckets FROM merchant_research_attempts WHERE lease_expires_at>? AND (phase='dispatched' OR (phase='uncertain' AND outcome IS NULL))").all(new Date(input.now).toISOString()) as { buckets: string }[];
-      for (const bucket of controlling) if (running.filter((other) => bucketListSchema.parse(JSON.parse(other.buckets)).some((item) => item.kind === bucket.kind && item.id === bucket.id)).length >= 2) return false;
+      for (const bucket of controlling) if (running.filter((other) => decodeStored(bucketListSchema, other.buckets).some((item) => item.kind === bucket.kind && item.id === bucket.id)).length >= 2) return false;
       const credential = buckets.find((bucket) => bucket.kind === 'credential')!;
       const launches = this.db.prepare('SELECT dispatched_at,buckets FROM merchant_research_attempts WHERE dispatched_at>?').all(new Date(Date.parse(input.now) - 1000).toISOString()) as { dispatched_at: string; buckets: string }[];
-      if (launches.some((other) => bucketListSchema.parse(JSON.parse(other.buckets)).some((item) => item.kind === 'credential' && item.id === credential.id))) return false;
+      if (launches.some((other) => decodeStored(bucketListSchema, other.buckets).some((item) => item.kind === 'credential' && item.id === credential.id))) return false;
       this.db.prepare("UPDATE merchant_research_attempts SET phase='dispatched',dispatched_at=? WHERE id=?").run(new Date(input.now).toISOString(), row.id);
       return true;
     });
@@ -400,7 +406,7 @@ export class MerchantWorkflow {
       const row = this.attemptRow(input.scope, input.id);
       if (!row || row.generation !== input.expectedGeneration || row.claim_token !== input.claimToken ||
         !active(row.lease_expires_at, input.now) || (row.phase !== 'reserved' && row.phase !== 'dispatched' && row.phase !== 'uncertain') ||
-        (row.outcome !== null && outcomeSchema.parse(JSON.parse(row.outcome)).phase !== 'uncertain')) return false;
+        (row.outcome !== null && decodeStored(outcomeSchema, row.outcome).phase !== 'uncertain')) return false;
       this.db.prepare("UPDATE merchant_research_attempts SET phase='known_failed',settled_atoms='0',claim_token=NULL,outcome=? WHERE id=?")
         .run(JSON.stringify({ phase: 'known_failed', costAtoms: '0', providerEvidence: 'not_billed', workerEvidence: 'not_invoked' }), row.id);
       return true;
@@ -413,7 +419,7 @@ export class MerchantWorkflow {
       const row = this.attemptRow(input.scope, input.id);
       if (!row || !this.admittedAttempt(input, row) || row.claim_token !== input.claimToken || row.dispatched_at === null) return false;
       if (outcome.phase === 'succeeded' && BigInt(outcome.costAtoms) > BigInt(row.reserved_atoms)) throw new Error('Settlement exceeds reserved atoms');
-      if (row.outcome !== null) return same(outcomeSchema.parse(JSON.parse(row.outcome)), outcome);
+      if (row.outcome !== null) return same(decodeStored(outcomeSchema, row.outcome), outcome);
       if (row.phase !== 'dispatched' && row.phase !== 'uncertain') return false;
       this.db.prepare('UPDATE merchant_research_attempts SET phase=?,settled_atoms=?,outcome=? WHERE id=?').run(outcome.phase, outcome.phase === 'uncertain' ? null : outcome.costAtoms, JSON.stringify(outcome), row.id);
       return true;
@@ -496,7 +502,7 @@ export function reconcileMerchantRestore(db: Database, now: string): void {
   db.prepare("UPDATE merchant_research_attempts SET phase=CASE WHEN phase='dispatched' THEN 'uncertain' ELSE phase END,source_refs=?,visibility=?,key_hash=?,intent_hash=?,claim_token=NULL,content_deleted=1").run(JSON.stringify(EMPTY_REFS), JSON.stringify({ hash: '0'.repeat(64), privateActorId: null }), '0'.repeat(64), '0'.repeat(64));
   const policies = db.prepare('SELECT scope_key,value FROM merchant_policies').all() as (ValueRow & { scope_key: string })[];
   for (const row of policies) {
-    const policy = policySchema.parse(JSON.parse(row.value));
+    const policy = decodeStored(policySchema, row.value);
     policy.mode = 'local-only'; policy.generation++; policy.updatedAt = now;
     db.prepare('UPDATE merchant_policies SET value=? WHERE scope_key=?').run(JSON.stringify(policy), row.scope_key);
   }

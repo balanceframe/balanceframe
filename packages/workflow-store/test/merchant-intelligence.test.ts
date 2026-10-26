@@ -692,6 +692,80 @@ describe('merchant intelligence persistence and admission', () => {
   });
 
   describe('strict malformed boundary and fail-closed configuration', () => {
+    it.each(['policy', 'decision', 'evidence', 'cache', 'outcome', 'visibility', 'source-refs', 'quota-buckets'] as const)(
+      'withholds malformed persisted %s without repairing or publishing it', (family) => {
+        let table: string;
+        let column = 'value';
+        let read: () => unknown;
+        if (family === 'policy') {
+          table = 'merchant_policies'; read = () => store.merchant.policy(access());
+        } else if (family === 'decision') {
+          store.merchant.decide({ ...access(), id: 'stored-decision', payload: ALIAS, sourceRefs: REFS, state: 'accepted', expectedVersion: 0 });
+          table = 'merchant_decisions'; read = () => store.merchant.decisions({ ...access(), limit: 1000 });
+        } else if (family === 'evidence') {
+          store.merchant.putEvidence({ ...access(), value: evidenceValue(), expectedRevision: null });
+          table = 'merchant_evidence'; read = () => store.merchant.evidence({ ...access(), key: evidenceValue().key });
+        } else if (family === 'cache') {
+          publishCache({ ...access(), value: cacheValue() });
+          table = 'merchant_enrichment_cache'; read = () => store.merchant.cache({ ...access(), key: key() });
+        } else {
+          const identity = `stored-${family}`;
+          admitted(identity);
+          table = 'merchant_research_attempts';
+          column = family === 'source-refs' ? 'source_refs' : family === 'quota-buckets' ? 'buckets' : family;
+          read = family === 'quota-buckets'
+            ? () => reserve('new-request', { key: { ...key(), queryFingerprint: '9'.repeat(64) } })
+            : () => reserve(identity);
+        }
+        const db = new Database(filename);
+        try {
+          const before = db.prepare(`SELECT ${column} AS value FROM ${table}`).get() as { value: string | null };
+          db.prepare(`UPDATE ${table} SET ${column}=?`).run('{}');
+          const attemptsBefore = family === 'quota-buckets' ? db.prepare('SELECT * FROM merchant_research_attempts').all() : null;
+          expect(read).toThrow('Stored merchant state is unavailable');
+          expect(db.prepare(`SELECT ${column} AS value FROM ${table}`).get()).toEqual({ value: '{}' });
+          if (attemptsBefore) expect(db.prepare('SELECT * FROM merchant_research_attempts').all()).toEqual(attemptsBefore);
+          db.prepare(`UPDATE ${table} SET ${column}=?`).run(before.value);
+          const restored = read();
+          if (family === 'decision') expect(restored).toMatchObject({ records: [{ id: 'stored-decision' }] });
+          else if (family === 'policy') expect(restored).toMatchObject({ mode: POLICY.mode });
+          else if (family === 'evidence') expect(restored).toMatchObject({ key: evidenceValue().key });
+          else if (family === 'cache') expect(restored).toMatchObject({ confidence: 'uncalibrated' });
+          else expect(restored).toMatchObject({ status: 'admitted' });
+        } finally { db.close(); }
+      },
+    );
+
+    it('rolls back policy and generation writes when a persisted decision cannot be decoded', () => {
+      store.merchant.decide({ ...access(), id: 'stored-decision', payload: ALIAS, sourceRefs: REFS, state: 'accepted', expectedVersion: 0 });
+      const current = store.merchant.policy(access())!;
+      const generation = store.merchant.generation(SCOPE);
+      const db = new Database(filename);
+      try {
+        const policies = db.prepare('SELECT * FROM merchant_policies').all();
+        db.prepare('UPDATE merchant_decisions SET value=?').run('{}');
+        const decisions = db.prepare('SELECT * FROM merchant_decisions').all();
+        expect(() => store.merchant.setPolicy({ ...access(), expectedVersion: current.version, value: { ...POLICY, cacheTtlHours: 24 } })).toThrow('Stored merchant state is unavailable');
+        expect(db.prepare('SELECT * FROM merchant_policies').all()).toEqual(policies);
+        expect(store.merchant.generation(SCOPE)).toBe(generation);
+        expect(db.prepare('SELECT * FROM merchant_decisions').all()).toEqual(decisions);
+        expect(store.merchant.policy(access())).toEqual(current);
+      } finally { db.close(); }
+    });
+
+    it('preserves malformed stored JSON as a syntax failure and rejects malformed caller policy without writing', () => {
+      const db = new Database(filename);
+      try {
+        const before = db.prepare('SELECT value FROM merchant_policies').get() as { value: string };
+        db.prepare('UPDATE merchant_policies SET value=?').run('{');
+        expect(() => store.merchant.policy(access())).toThrow(SyntaxError);
+        db.prepare('UPDATE merchant_policies SET value=?').run(before.value);
+        const current = store.merchant.policy(access())!;
+        expect(() => store.merchant.setPolicy({ ...access(), expectedVersion: current.version, value: { ...POLICY, cacheTtlHours: 721 } })).toThrow();
+        expect(store.merchant.policy(access())).toEqual(current);
+      } finally { db.close(); }
+    });
+
     it.each([
       { maxSearchesPerDay: -1 }, { maxSearchesPerDay: 0.5 }, { maxSearchesPerDay: Infinity },
       { maxSearchesPerDay: Number.MAX_SAFE_INTEGER + 1 }, { maxSpendMinorUnitsPerMonth: NaN },

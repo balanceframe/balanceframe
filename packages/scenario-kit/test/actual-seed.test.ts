@@ -457,7 +457,7 @@ describe('shared ProtocolSnapshot Actual seeder', () => {
       const ids = await populateActualBudget(nativeRuleLedger());
       expect(ids).toHaveProperty('ruleIds');
       if (!('ruleIds' in ids)) throw new Error('Seeder must publish logical-to-native rule IDs');
-      const ruleIds = z.record(z.string().min(1)).parse(ids.ruleIds);
+      const ruleIds = z.record(z.string(), z.string().min(1)).parse(ids.ruleIds);
       expect(Object.keys(ruleIds).sort()).toEqual(['logical-native-post', 'logical-native-pre']);
       const pre: Omit<APIRuleEntity, 'id'> = {
         stage: 'pre',

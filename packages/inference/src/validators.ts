@@ -49,7 +49,7 @@ export const suggestionSchema = z.object({
   transactionId: z.string().min(1),
   proposedCategoryId: z.string(), // empty string = error/uncategorize
   categoryName: z.string(),
-  confidence: z.number(),
+  confidence: z.union([z.number(), z.literal(Infinity), z.literal(-Infinity)]),
   reasonCodes: z.array(z.string()),
   evidence: z.array(z.string()),
 
@@ -75,7 +75,7 @@ export const suggestionSchema = z.object({
   id: z.string().min(1),
   alternatives: z.array(alternativeSchema),
   errors: z.array(z.string()),
-  deterministicEvidence: z.record(z.unknown()),
+  deterministicEvidence: z.record(z.string(), z.unknown()),
 });
 
 export type SuggestionParsed = z.infer<typeof suggestionSchema>;

@@ -103,10 +103,7 @@ export default defineEventHandler(async (event) => {
       );
     }
     const message = error instanceof Error ? error.message : '';
-    if (error instanceof z.ZodError) {
-      setResponseStatus(event, 400);
-      return errorEnvelope('INVALID_BODY', 'The action or decision intent is invalid.', null, false, requestId);
-    }
+    // Client intent was validated above; failures here describe server-owned action state.
     if (/configured budget does not match/i.test(message)) {
       setResponseStatus(event, 409);
       return errorEnvelope('SPACE_CONNECTION_MISMATCH', 'The configured budget does not match the selected space.', null, false, requestId);

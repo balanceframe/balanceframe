@@ -85,6 +85,8 @@ export default defineNuxtConfig({
     // is an input path for node-file-trace, so resolve the direct production
     // dependency instead of passing its package specifier.
     externals: {
+      // Bundle each consumer's declared major; external tracing otherwise merges Zod 3 and 4.
+      inline: ['zod'],
       external: ['better-sqlite3'],
       traceInclude: [actualApiEntry],
     },

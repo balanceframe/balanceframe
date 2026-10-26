@@ -425,8 +425,7 @@ export type UserAttestedLiquidityObservation = z.infer<
 
 /** Stored server-owned binding; the public observation schema deliberately rejects its hash. */
 export const persistedUserAttestedLiquidityObservationSchema =
-  userAttestedLiquidityObservationSchema
-    .innerType()
+  z.object(userAttestedLiquidityObservationSchema.shape)
     .extend({
       ledgerConfirmationHash: z
         .string()

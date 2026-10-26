@@ -44,7 +44,7 @@ const categoryPreconditionsSchema = z.object({
     transactionId: z.string().min(1),
     categoryId: z.string(),
     status: z.enum(['pending_review', 'correcting']),
-    version: z.number().int().positive(),
+    version: z.number().refine(Number.isInteger, 'Expected integer').positive(),
   }).strict().optional(),
   transaction: z.object({
     id: z.string().min(1).optional(),
