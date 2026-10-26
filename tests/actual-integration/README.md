@@ -27,6 +27,7 @@ Actual instance.
 | `ACTUAL_GROUP_ID`             | Required              | Exact seeded fixture group ID                                            |
 | `ACTUAL_BUDGET_NAME`          | Required              | Exact seeded fixture budget name                                         |
 | `ACTUAL_SEED_DATA_DIR`        | Required              | Local metadata directory for that exact seeded budget                    |
+| `ACTUAL_EXPECTED_SERVER_VERSION` | Optional test input | Exact running sync-server version required by an acceptance profile      |
 | `ACTUAL_SERVER_DATA_DIR`      | Setup input           | Dedicated disposable server root; defaults to `.actual-server-data` here |
 
 ## Quick Start
@@ -73,10 +74,41 @@ pnpm test
 pnpm --filter @balanceframe/actual-integration test
 ```
 
+Acceptance parity runs must set `ACTUAL_EXPECTED_SERVER_VERSION` to the version
+for their profile, for example `26.7.0` or `26.10.0`. This checks the running
+server's `/info` build name and exact version before any test file runs; the
+installed SDK version or a profile label does not prove the server version.
+The check first requires the complete disposable-fixture provenance above,
+refuses redirects, and fails on missing or malformed metadata, an HTTP/network
+error, or a five-second request timeout. Ordinary runs without this variable
+keep their existing behavior.
+
+After starting and seeding the intended version in its own disposable data root,
+run the suite directly to retain that existing fixture:
+
+```bash
+BALANCEFRAME_ACTUAL_FIXTURE=1 ACTUAL_EXPECTED_SERVER_VERSION=26.7.0 \
+  pnpm --filter @balanceframe/actual-integration exec vitest run
+```
+
+Use `26.10.0` for the other profile. The package `test` command runs its setup
+script first, which restarts the fixture using the `actual-server` on `PATH`.
+The version check still applies after setup, so a different running version fails
+instead of producing a mislabeled acceptance result.
+
+The production sync-server also enforces a cumulative request limit. For a
+version acceptance run, provision a fresh managed fixture for each test file
+and pass its filename to `vitest run` (for example,
+`vitest run 06-import-export.test.ts`). Record every file's result, verify the
+running version each time, and stop only processes owned by that fixture before
+removing its disposable data. Keep production rate limits and all test assertions
+enabled; an HTTP 429 from a shared fixture is incomplete acceptance evidence.
+
 ## Test Files
 
 | File                              | Proof Points                                                                   |
 | --------------------------------- | ------------------------------------------------------------------------------ |
+| `00-fixture-server-version.test.ts` | Mocked setup regressions for the optional running-server version check        |
 | `01-connection-budget.test.ts`    | Connect, discover budgets, select budget, encrypted/unencrypted budgets        |
 | `02-sync-cache-lifecycle.test.ts` | Download budget, sync, cache isolation, cleanup, cross-budget isolation        |
 | `03-read-entities.test.ts`        | Read accounts/categories/payees/transactions, rules/schedules, ActualQL, batch |
