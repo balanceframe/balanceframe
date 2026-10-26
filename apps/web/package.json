@@ -29,7 +29,7 @@
     "h3": "^1.15.11",
     "vue": "^3.5.0",
     "vue-router": "^5.2.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@iconify-json/heroicons": "^1.2.3",

@@ -8,6 +8,73 @@ backport. A–F, the Forge and Braces interim mitigations, and the Actual Node S
 Handlebars repair are implemented. The Nitro owner replacement remains blocked
 by traversal compatibility; no replacement walker has been applied.
 
+## Zod 4 and Undici follow-up — 2026-10-26
+
+This local follow-up starts from main
+`c101c8ca8e3b62fb4d34503e51f62b921e96dc14`. The approved changes raise the web
+Zod floor to `^4.6.6`, consolidate standalone Zod 4.4.3/4.6.5 consumers on
+**4.6.6**, and update Nuxt's compatible npm Undici resolution from **8.11.2 to
+8.12.2**. All 1,030 unrelated package metadata entries, Zod 3.25.76, Happy DOM
+20.11.1, Forge 1.4.0, patch hashes and security defaults remain unchanged.
+
+The updates address the bounded-collection preflight defect in
+[Zod](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5) and the excessive
+content-coding/early-close process crash in
+[Undici](https://github.com/advisories/GHSA-xjj6-f33q-929c). Zod's upstream fix
+protects bounded arrays, sets and maps; it does not impose limits on unbounded
+collections. No new global input cap or financial-history truncation is added.
+
+Nineteen new tests exercise actual web/API-key Zod resolution, collection bounds,
+item/refinement work, ordinary validation and overwrite-before-limit semantics,
+plus an owned loopback Undici child process with malformed and ordinary compressed
+responses. Before updating, ten cases fail and nine controls pass; afterward all
+19 pass, and the complete dependency-security suite passes **87/87**.
+
+Production inspection also reproduced an inherited Nitro delivery defect on a
+fresh build of main: bundled web and financial validators shared a bare `zod`
+import resolving to Zod 3.25.76. Updated dependencies alone did not repair it.
+`nitro.externals.inline: ['zod']` now bundles each importer's declared major;
+Actual tracing and the SQLite/Actual external exclusions are preserved. The
+production-artifact regression traces a representative compiled web constructor
+to Zod 4 and two financial snapshot constructors to Zod 3, and independently executes
+the external API-key artifact's fixed Zod 4 preflight. It passes **3/3** on the
+fixed build and fails against the baseline. Application/authentication chunks are
+not executed by this check; this is static binding evidence plus a pure-library
+probe, not browser acceptance. Run it after building the web application:
+
+```bash
+pnpm --filter @balanceframe/web build
+node --test tests/deployment/zod-production.test.mjs
+```
+
+Local Linux validation passes the security suite (87), deployment contracts
+(33), full web suite (2,362; 85.61% line coverage), CLI (203), and protocol
+contracts (186), plus frozen installation, production Nuxt build, root/web
+typechecks and zero-warning lint. Native consumers use an existing addon after
+verifying unchanged Rust/protocol source; this is not a fresh Rust build. Full
+workspace aggregate coverage, browser, container execution and Windows checks
+were not repeated for this local checkpoint.
+
+Contemporaneous lockfile audits report:
+
+| State | Critical | High | Moderate | Low |
+| --- | ---: | ---: | ---: | ---: |
+| Main baseline | 0 | 6 | 14 | 5 |
+| Approved updates | 0 | 3 | 12 | 5 |
+
+The three remaining high findings are Zod 3, Happy DOM and Forge. The existing
+Forge patch and regressions mitigate its reported nested-DigestAlgorithm defect;
+the registry version flag remains. The audit still fails, and its existing
+nonblocking CI treatment is unchanged. This is not a clean-audit claim.
+
+Two decisions remain unimplemented. Happy DOM **21.0.4** is a development/test
+major upgrade whose safer CSS/iframe-loading defaults should be retained and
+validated with the complete web suite. Zod 3 needs either an explicitly approved
+bounded early-abort backport, with local maintenance and a continuing audit flag,
+or a coordinated Zod 4 migration covering records, recursive types, defaults,
+unknown-field requiredness, numeric/UUID constraints and canonical JSON Schema/
+AJV/Rust parity. A global Zod 3-to-4 override is not part of this change.
+
 ## Editor and Forge follow-up — 2026-10-22
 
 The user approved only Vite **8.3.2 → 8.3.3**, standalone launch-editor
