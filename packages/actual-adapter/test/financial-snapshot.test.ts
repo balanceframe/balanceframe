@@ -229,6 +229,105 @@ afterEach(() => {
 });
 
 describe('ActualConnector FinancialSnapshot synchronization', () => {
+  it.each([
+    { representation: 'nested', parentFlag: true, coverage: 'complete', tombstoneFlag: undefined },
+    { representation: 'flat', parentFlag: true, coverage: 'complete', tombstoneFlag: undefined },
+    { representation: 'nested', parentFlag: false, coverage: 'partial', tombstoneFlag: undefined },
+    { representation: 'flat', parentFlag: false, coverage: 'partial', tombstoneFlag: undefined },
+    { representation: 'nested', parentFlag: undefined, coverage: 'partial', tombstoneFlag: undefined },
+    { representation: 'flat', parentFlag: undefined, coverage: 'partial', tombstoneFlag: undefined },
+    { representation: 'nested', parentFlag: false, coverage: 'partial', tombstoneFlag: true },
+    { representation: 'nested', parentFlag: true, coverage: 'complete', tombstoneFlag: false },
+  ] as const)(
+    'keeps $representation split facts but reports $coverage coverage for parent flag $parentFlag and tombstone flag $tombstoneFlag',
+    async ({ representation, parentFlag, coverage, tombstoneFlag }) => {
+      const children = [-60, -40].map((amount, index) => protocolTransaction(`split-child-${index}`, {
+        account: 'account-checking', amount, is_child: true, parent_id: 'split-parent',
+      }));
+      const parent = protocolTransaction('split-parent', {
+        account: 'account-checking', amount: -100,
+        ...(parentFlag === undefined ? {} : { is_parent: parentFlag }),
+        ...(representation === 'nested' ? { subtransactions: children } : {}),
+      });
+      const rows = representation === 'nested' ? [parent] : [parent, ...children];
+      if (tombstoneFlag !== undefined) rows.push({ ...parent, tombstone: true, is_parent: tombstoneFlag });
+      const client = createActualClient({
+        getAccounts: vi.fn().mockResolvedValue([account('account-checking', 'Checking')]),
+        getTransactions: vi.fn().mockResolvedValue(rows),
+      });
+      const result = await synchronize(client);
+      expect(result.financialSnapshot.coverage.transactions).toBe(coverage);
+      expect(result.snapshot.transactions).toHaveLength(1);
+      expect(result.snapshot.transactions[0]).toMatchObject({
+        id: parent.id, amount: { minorUnits: '-100', currency: 'USD' },
+        subtransactions: children.map((child) => ({
+          id: child.id, amount: { minorUnits: String(child.amount), currency: 'USD' },
+        })),
+      });
+      expect(client.addTransactions).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { representation: 'nested', marker: false, validFirst: false },
+    { representation: 'nested', marker: false, validFirst: true },
+    { representation: 'nested', marker: undefined, validFirst: false },
+    { representation: 'nested', marker: undefined, validFirst: true },
+    { representation: 'flat', marker: false, validFirst: false },
+    { representation: 'flat', marker: false, validFirst: true },
+    { representation: 'flat', marker: undefined, validFirst: false },
+    { representation: 'flat', marker: undefined, validFirst: true },
+  ] as const)(
+    'does not hide a conflicting live $representation parent marker $marker with validFirst=$validFirst',
+    async ({ representation, marker, validFirst }) => {
+      const child = protocolTransaction('conflicting-marker-child', {
+        account: 'account-checking', amount: -100, is_child: true, parent_id: 'conflicting-marker-parent',
+      });
+      const marked = protocolTransaction('conflicting-marker-parent', {
+        account: 'account-checking', amount: -100, is_parent: true,
+        ...(representation === 'nested' ? { subtransactions: [child] } : {}),
+      });
+      const unmarked = { ...marked, is_parent: marker };
+      const rows = validFirst ? [marked, unmarked] : [unmarked, marked];
+      if (representation === 'flat') rows.push(child);
+      const client = createActualClient({
+        getAccounts: vi.fn().mockResolvedValue([account('account-checking', 'Checking')]),
+        getTransactions: vi.fn().mockResolvedValue(rows),
+      });
+      const result = await synchronize(client);
+      expect(result.financialSnapshot.coverage.transactions).toBe('partial');
+      expect(client.addTransactions).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['ordinary', 'deleted children', 'deleted parent', 'closed account'] as const)(
+    'does not downgrade active transaction coverage for unmarked split parents with %s source',
+    async (source) => {
+      const checking = account('account-checking', 'Checking');
+      const closed = { ...account('account-closed', 'Closed'), closed: true };
+      const sourceAccount = source === 'closed account' ? closed.id : checking.id;
+      const child = protocolTransaction('inactive-split-child', {
+        account: sourceAccount, amount: -100, is_child: true, parent_id: 'inactive-split-parent',
+        ...(source === 'deleted children' ? { tombstone: true } : {}),
+      });
+      const parent = protocolTransaction('inactive-split-parent', {
+        account: sourceAccount, amount: -100,
+        ...(source === 'ordinary' ? {} : { subtransactions: [child] }),
+        ...(source === 'deleted parent' ? { tombstone: true } : {}),
+      });
+      const client = createActualClient({
+        getAccounts: vi.fn().mockResolvedValue(source === 'closed account' ? [checking, closed] : [checking]),
+        getTransactions: vi.fn().mockImplementation(async (accountId: string) => accountId === sourceAccount ? [parent] : []),
+      });
+      const result = await synchronize(client);
+      expect(result.financialSnapshot.coverage.transactions).toBe(source === 'closed account' ? 'empty' : 'complete');
+      const normalized = result.snapshot.transactions.find(({ id }) => id === parent.id);
+      if (source === 'deleted parent') expect(normalized).toBeUndefined();
+      else expect(normalized?.subtransactions).toHaveLength(source === 'closed account' ? 1 : 0);
+      expect(client.addTransactions).not.toHaveBeenCalled();
+    },
+  );
+
   it('records successful account enumeration independently from unavailable per-account facts', async () => {
     const result = await synchronize(
       createActualClient({
