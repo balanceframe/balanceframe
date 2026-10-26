@@ -167,6 +167,41 @@ sandbox limitation, independently of component/API verification.
   verified Docker image. The core-only and opt-in Compose boundaries have
   automated tests.
 
+### 2026-10-26: Actual server acceptance parity
+
+Against main `7c2e87f748dd1ffc7da8e63b43ebba9787e32e53`, the existing patched
+SDK 26.10.0 passed all 13 integration files against each of the already-installed
+sync-server versions **26.7.0 and 26.10.0**: **133 tests per version**, comprising
+105 existing integration tests and 28 new mocked version-gate regressions. The
+opt-in `ACTUAL_EXPECTED_SERVER_VERSION` setup check verifies the running HTTP
+server's `/info` identity and exact version before each file. See the
+[fixture and invocation instructions](../../../tests/actual-integration/README.md).
+
+All seven API proofs passed, including the connector's healthy snapshot and
+persisted review-to-Actual mutation/reread path. The governed plural-allocation
+test also passed independent approval, amendments to the same imported parents,
+and lost-acknowledgement recovery through read-only proof on both server versions.
+Each file used a fresh private loopback server, generated test-only credentials,
+and canonical synthetic fixture data. Owned process groups were verified stopped
+before their data and temporary client directories were removed.
+
+An initial monolithic 26.7.0 run stopped after 80 passing tests when the production
+server's 500-requests-per-minute limit returned HTTP 429 during import/export.
+The completed runs used one fresh fixture per file, preserving that limit and
+every assertion. These results establish partitioned API acceptance, not a
+successful monolithic aggregate run or live bank-provider acceptance.
+
+Frozen offline install, current adapter/store/inference/application builds,
+root typechecking, focused lint and independent correctness/complexity review
+passed. The new setup logic has 100% statement, line and branch coverage. The
+focused strict fixture typecheck remains blocked by the unchanged
+`tests/actual-integration/actual-client.ts:74` optional-date argument mismatch.
+The unchanged native/protocol sources used an existing native artifact with
+SHA-256 `ae79b28a0568818d95cc0c9b8fbe89e961fb26baf7295e9cb75535284906ac16`;
+this was not a fresh Rust build. No dependencies or runtime compatibility policy
+changed. Browser lost-acknowledgement recovery and optional OCR-container
+acceptance remain separate open checks.
+
 The stable release and authoritative roadmap exit must not be marked complete
 until the remaining acceptance criteria and validation gates are resolved.
 An explicitly approved [acceptance-testing beta](../../releases.md#acceptance-testing-betas)
