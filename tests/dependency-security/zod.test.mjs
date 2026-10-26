@@ -6,7 +6,14 @@ import { test } from 'node:test';
 const webRequire = createRequire(resolve(import.meta.dirname, '../../apps/web/package.json'));
 const apiKeyRequire = createRequire(webRequire.resolve('@better-auth/api-key'));
 
-for (const [consumer, require] of [['web', webRequire], ['api-key', apiKeyRequire]]) {
+const consumers = [
+  ['web', webRequire], ['api-key', apiKeyRequire],
+  ...['packages/protocol-generated', 'packages/workflow-store', 'packages/application',
+    'packages/actual-adapter', 'packages/inference', 'apps/cli', 'packages/scenario-kit',
+    'tests/contract'].map((consumer) => [consumer, createRequire(resolve(import.meta.dirname, `../../${consumer}/package.json`))]),
+];
+
+for (const [consumer, require] of consumers) {
   const { z } = require('zod');
 
   test(`${consumer} resolves the fixed Zod 4 release`, () => {

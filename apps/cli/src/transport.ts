@@ -41,7 +41,7 @@ const envelopeSchema = z
     status: z.enum(['ok', 'error']),
     dataFreshness: freshnessSchema,
     authorization: authorizationSchema,
-    result: z.unknown(),
+    result: z.unknown().optional(),
     error: errorSchema,
     scope: z.record(z.string(), z.unknown()).optional(),
     semanticClasses: z.array(z.string()).optional(),

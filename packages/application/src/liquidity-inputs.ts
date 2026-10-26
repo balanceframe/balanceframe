@@ -127,8 +127,7 @@ export const liquidityObservationInputSchema = z
     expiresAt: canonicalUtcTimestampSchema,
     observations: z
       .array(
-        userAttestedLiquidityObservationSchema
-          .innerType()
+        z.object(userAttestedLiquidityObservationSchema.shape)
           .omit({ observedAt: true, expiresAt: true })
           .strict(),
       )

@@ -51,7 +51,7 @@ const json: z.ZodType<unknown> = z.lazy(() =>
     z.boolean(),
     z.number().finite(),
     z.array(json).max(100000),
-    z.record(json),
+    z.record(z.string(), json),
   ]),
 );
 const inputSchema = z
@@ -65,7 +65,7 @@ const inputSchema = z
     retentionUntil: timestamp,
     parseStatus: z.enum(['parsed', 'malformed', 'unsupported_template', 'source_conflict']),
     quality: z.array(id).max(100),
-    extraction: z.record(json),
+    extraction: z.record(z.string(), json),
     content: z
       .instanceof(Buffer)
       .refine((value) => value.length > 0 && value.length <= 10 * 1024 * 1024),

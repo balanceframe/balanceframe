@@ -168,8 +168,8 @@ const ruleMutationPlanSchema = z
   .object({
     planId: z.string().min(1),
     ruleName: z.string(),
-    trigger: z.record(z.unknown()),
-    actions: z.array(z.record(z.unknown())),
+    trigger: z.record(z.string(), z.unknown()),
+    actions: z.array(z.record(z.string(), z.unknown())),
     hash: z.string().min(1),
     conditions: z
       .array(
@@ -199,9 +199,9 @@ const ruleSimulationResultSchema = z
   .object({
     ruleId: z.string(),
     name: z.string(),
-    transactionsMatched: z.number().int().nonnegative(),
+    transactionsMatched: z.number().refine(Number.isInteger, 'Expected integer').nonnegative(),
     transactionsAffected: z.array(z.string()),
-    categoryDistribution: z.record(z.number().int().nonnegative()),
+    categoryDistribution: z.record(z.string(), z.number().refine(Number.isInteger, 'Expected integer').nonnegative()),
     conflicts: z.array(z.string()),
     examples: z.array(
       z
@@ -234,7 +234,7 @@ const ruleLifecycleSnapshotSchema = z
   .object({
     id: z.string().min(1),
     name: z.string(),
-    order: z.number().int().nonnegative(),
+    order: z.number().refine(Number.isInteger, 'Expected integer').nonnegative(),
     trigger: z.array(z.unknown()),
     actions: z.array(z.unknown()),
     inactive: z.boolean(),
@@ -247,7 +247,7 @@ const ruleOverrideStateSchema = z
   .object({
     ruleId: z.string().min(1),
     inactive: z.boolean().nullable(),
-    version: z.number().int().nonnegative(),
+    version: z.number().refine(Number.isInteger, 'Expected integer').nonnegative(),
   })
   .strict();
 
@@ -256,7 +256,7 @@ const ruleLifecyclePreconditionsSchema = z
     rule: ruleLifecycleSnapshotSchema,
     override: ruleOverrideStateSchema.nullable(),
     actualVersion: z.string().min(1),
-    categoryGroupMembers: z.record(z.array(z.string())).optional(),
+    categoryGroupMembers: z.record(z.string(), z.array(z.string())).optional(),
   })
   .strict();
 
@@ -401,7 +401,7 @@ function supportedRuleTerms(input: RuleProposalInput) {
   };
 }
 
-function parseNativeResult<T extends z.ZodTypeAny>(json: string, schema: T): z.infer<T> {
+function parseNativeResult<T extends z.ZodType>(json: string, schema: T): z.infer<T> {
   const result: unknown = JSON.parse(json);
   return schema.parse(result);
 }
@@ -701,7 +701,7 @@ export class RuleMutationService {
         const replay = this.replayResult(acquisition.claim.record, input, proposal);
         if (replay.success && proposal.operation === 'create_rule') {
           try {
-            const preconditions = z.record(z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
+            const preconditions = z.record(z.string(), z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
             const context = ruleReviewContextSchema.parse(preconditions.reviewContext);
             if (context.evidenceKey !== null) {
               if (!this.resolveReplayPublicationAuthority)
@@ -855,7 +855,7 @@ export class RuleMutationService {
       const approvedNativePayloadHash = proposal.payload.composite?.nativePayloadHash;
       if (typeof approvedNativePayloadHash !== 'string' || approvedNativePayloadHash !== approvedNativePlan.hash)
         throw new Error('Native rule payload hash does not match its captured plan');
-      const approvedRule = z.record(z.unknown()).parse(preconditions.nativeRule);
+      const approvedRule = z.record(z.string(), z.unknown()).parse(preconditions.nativeRule);
       if (canonicalProposalJson(approvedRule) !== canonicalProposalJson(proposal.payload.rule))
         throw new Error('Native rule facts do not match the executable rule payload');
     } catch (e) {
@@ -1363,7 +1363,7 @@ export class RuleMutationService {
 
   private extractRuleInput(proposal: ActionProposal): RuleProposalInput {
     const rule = this.ruleData(proposal);
-    const preconditions = z.record(z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
+    const preconditions = z.record(z.string(), z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
     const name = preconditions.ruleName;
     if (typeof name !== 'string' || !name.trim() || name !== name.trim())
       throw new Error('Rule name must be non-empty and normalized');
