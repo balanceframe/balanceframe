@@ -324,10 +324,11 @@ test('redirect registration normalizes Windows separators before the real Vite a
   }
 });
 
-test('built Nuxt applies route rules to case variants and rejects script-capable link targets', () => {
+test('built Nuxt reports route and link security states through machine-readable CI output', () => {
   const environment = {
     ...process.env,
     NODE_ENV: 'production',
+    CI: 'true',
     NITRO_PRESET: 'node-server',
     NUXT_TELEMETRY_DISABLED: '1',
   };
