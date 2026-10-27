@@ -2,8 +2,9 @@
 
 This is partial integration evidence for the existing delegated categorization
 writer. It does not complete slice 7 or qualify read-only Actual access or
-lost-acknowledgement recovery. The source-boundary decision remains open in
-[the decision packet](categorization-simulation-decision-2026-10-27.md).
+lost-acknowledgement recovery. The owner has since approved the synchronization-capable
+preview contract in [ADR 0009](adr/0009-synchronization-capable-categorization-preview.md).
+That decision does not establish settlement of an uncertain prior dispatch.
 
 `tests/actual-integration/13-delegated-categorization.test.ts` creates an owned
 disposable budget from `protocol/fixtures/representative.json`. It uses the normal
