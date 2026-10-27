@@ -159,3 +159,12 @@ Its public download and shutdown contracts expose no guaranteed read-only mode.
 The application/provider tests establish intent, authorization and output bounds;
 they do not establish end-to-end zero SDK uploads. This newly recorded limitation
 supersedes any broader interpretation of the earlier read-only wording.
+
+Subsequent validation after non-rewriting integration of the approved Nuxt 4.6.2 /
+Vitest 4.1.12 security closure passed on the combined source: inference 265,
+application 1,516, CLI 209 and web 2,391 tests, with the same respective line
+coverage (95.76%, 89.83%, 89.56%, 85.95%). Frozen install, affected package builds,
+root and Nuxt typechecks, root lint, production build and all three compiled Zod
+binding checks passed. The separate CI-only Nuxt test-output correction preserves
+every route/link assertion and deadline. These checks update compatibility
+evidence; they do not close the source lifecycle or browser gates above.
