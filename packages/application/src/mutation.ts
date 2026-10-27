@@ -501,7 +501,7 @@ export class CategorizationMutationService {
     // 10. Stale precondition check
     // =====================================================================
 
-    const preconditionCheck = this.checkPreconditions(proposal, plan, tx, snapshot);
+    const preconditionCheck = checkCategorizationPreconditions(proposal, plan, tx, snapshot);
     if (!preconditionCheck.ok) {
       await this.recordFailure(input, new Error(preconditionCheck.reason));
       await this.appendFailureAudit(input, proposal, authorizationDisposition, 'precondition_mismatch', dispatchState);
@@ -702,58 +702,6 @@ export class CategorizationMutationService {
   // -------------------------------------------------------------------------
 
   /**
-   * Check approved transaction facts against the fresh ledger and native plan.
-   */
-  private checkPreconditions(
-    proposal: Extract<ActionProposal, { operation: 'set_category' }>,
-    plan: MutationPlan,
-    transaction: Transaction,
-    snapshot: ProtocolSnapshot,
-  ): { ok: true } | { ok: false; reason: string } {
-    try {
-      const parsed = categoryPreconditionsSchema.safeParse(JSON.parse(proposal.preconditions) as unknown);
-      if (!parsed.success)
-        return { ok: false, reason: 'Invalid preconditions JSON in proposal' };
-      const expected = parsed.data;
-      if (
-        !expected.nativePlan ||
-        proposal.payload.composite?.nativePayloadHash !== plan.hash ||
-        canonicalProposalJson(expected.nativePlan) !== canonicalProposalJson(plan)
-      )
-        return { ok: false, reason: 'Approved native plan no longer matches the current algorithm' };
-      const expectedTransaction = expected.transaction;
-      const currentAmount = BigInt(transaction.amount.minorUnits);
-      const expectedCategory = expectedTransaction?.categoryId !== undefined
-        ? expectedTransaction.categoryId
-        : expected.currentCategoryId ?? null;
-      if (
-        expectedCategory !== plan.currentCategoryId ||
-        transaction.categoryId !== plan.currentCategoryId ||
-        (expected.transactionId !== undefined && expected.transactionId !== transaction.id) ||
-        (expected.accountId !== undefined && expected.accountId !== transaction.accountId) ||
-        expected.actualVersion !== snapshot.actualVersion ||
-        expected.snapshotSchemaVersion !== snapshot.schemaVersion ||
-        (expected.amount !== undefined && (
-          expected.amount.currency !== transaction.amount.currency ||
-          BigInt(expected.amount.minorUnits) !== BigInt(transaction.amount.minorUnits)
-        )) ||
-        (expectedTransaction !== undefined && (
-          (expectedTransaction.id !== undefined && expectedTransaction.id !== transaction.id) ||
-          expectedTransaction.accountId !== transaction.accountId ||
-          expectedTransaction.direction !== (currentAmount < 0n ? 'outgoing' : 'incoming') ||
-          expectedTransaction.amount.currency !== transaction.amount.currency ||
-          BigInt(expectedTransaction.amount.minorUnits) !== (currentAmount < 0n ? -currentAmount : currentAmount)
-        ))
-      )
-        return { ok: false, reason: 'Approved transaction facts no longer match the current ledger' };
-      return { ok: true };
-    } catch {
-      return { ok: false, reason: 'Invalid preconditions JSON in proposal' };
-    }
-  }
-
-
-  /**
    * Build a failure result with the given reason code and message.
    */
   private fail(
@@ -939,6 +887,57 @@ export class CategorizationMutationService {
       planId: result.data.planId,
       reasonCodes: ['idempotency_replay'],
     };
+  }
+}
+
+/**
+ * Check approved transaction facts against the fresh ledger and native plan.
+ */
+export function checkCategorizationPreconditions(
+  proposal: Extract<ActionProposal, { operation: 'set_category' }>,
+  plan: MutationPlan,
+  transaction: Transaction,
+  snapshot: ProtocolSnapshot,
+): { ok: true } | { ok: false; reason: string } {
+  try {
+    const parsed = categoryPreconditionsSchema.safeParse(JSON.parse(proposal.preconditions) as unknown);
+    if (!parsed.success)
+      return { ok: false, reason: 'Invalid preconditions JSON in proposal' };
+    const expected = parsed.data;
+    if (
+      !expected.nativePlan ||
+      proposal.payload.composite?.nativePayloadHash !== plan.hash ||
+      canonicalProposalJson(expected.nativePlan) !== canonicalProposalJson(plan)
+    )
+      return { ok: false, reason: 'Approved native plan no longer matches the current algorithm' };
+    const expectedTransaction = expected.transaction;
+    const currentAmount = BigInt(transaction.amount.minorUnits);
+    const expectedCategory = expectedTransaction?.categoryId !== undefined
+      ? expectedTransaction.categoryId
+      : expected.currentCategoryId ?? null;
+    if (
+      expectedCategory !== plan.currentCategoryId ||
+      transaction.categoryId !== plan.currentCategoryId ||
+      (expected.transactionId !== undefined && expected.transactionId !== transaction.id) ||
+      (expected.accountId !== undefined && expected.accountId !== transaction.accountId) ||
+      expected.actualVersion !== snapshot.actualVersion ||
+      expected.snapshotSchemaVersion !== snapshot.schemaVersion ||
+      (expected.amount !== undefined && (
+        expected.amount.currency !== transaction.amount.currency ||
+        BigInt(expected.amount.minorUnits) !== BigInt(transaction.amount.minorUnits)
+      )) ||
+      (expectedTransaction !== undefined && (
+        (expectedTransaction.id !== undefined && expectedTransaction.id !== transaction.id) ||
+        expectedTransaction.accountId !== transaction.accountId ||
+        expectedTransaction.direction !== (currentAmount < 0n ? 'outgoing' : 'incoming') ||
+        expectedTransaction.amount.currency !== transaction.amount.currency ||
+        BigInt(expectedTransaction.amount.minorUnits) !== (currentAmount < 0n ? -currentAmount : currentAmount)
+      ))
+    )
+      return { ok: false, reason: 'Approved transaction facts no longer match the current ledger' };
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: 'Invalid preconditions JSON in proposal' };
   }
 }
 

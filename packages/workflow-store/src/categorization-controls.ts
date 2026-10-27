@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Database } from 'better-sqlite3';
 import { z } from 'zod';
 
@@ -153,6 +153,15 @@ export class CategorizationControls {
       }
     }
     return { parent, agent, magnitude };
+  }
+  /** Private binding of current policies, UTC windows and retained admissions; never returns usage rows. */
+  contextHash(input: CategorizationDispatchAdmission): string {
+    const digest = createHash('sha256');
+    digest.update(JSON.stringify(this.list(input.spaceId)));
+    digest.update(JSON.stringify(['day', 'week', 'month'].map((window) => categorizationWindowStart(input.now, window as 'day' | 'week' | 'month'))));
+    for (const row of this.db.prepare('SELECT * FROM categorization_dispatch_admissions WHERE space_id=? AND budget_id=? ORDER BY proposal_id')
+      .iterate(input.spaceId, input.budgetId)) digest.update(JSON.stringify(row));
+    return digest.digest('hex');
   }
   /** Read-only preflight never reserves allowance or consumes human approval. */
   preflight(input: CategorizationDispatchAdmission): void { this.check(input); }
