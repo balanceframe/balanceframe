@@ -638,7 +638,7 @@ export class ActualConnector implements BudgetLedger {
       canQuery: true,
       mode: this.mode,
       modeDescription: isObserve
-        ? 'Read-only: connect, download, synchronize, and analyze. Never modifies Actual.'
+        ? 'Analyze without submitting explicit mutations. SDK synchronization may upload pending changes or archives and post configured schedules.'
         : 'Review and apply: explicit approved writes permitted.',
     };
   }
@@ -695,9 +695,8 @@ export class ActualConnector implements BudgetLedger {
         overlapStart = d.toISOString();
       }
 
-      // In Observe mode, refresh by re-downloading instead of calling sync(),
-      // which may upload local changes. A caller that just selected the budget
-      // can skip the redundant download while still normalizing a snapshot.
+      // Observe uses download; both download and shutdown can synchronize inside the SDK.
+      // Selection already downloaded the budget, so its first capture can skip refresh.
       if (refresh) {
         if (this.mode === 'observe') {
           const creds = await this.credStore.load();

@@ -470,6 +470,8 @@ describe('ActualConnector', () => {
       expect(caps.canWrite).toBe(false);
       expect(caps.mode).toBe('observe');
       expect(caps.canRead).toBe(true);
+      expect(caps.modeDescription).toContain('SDK synchronization may upload');
+      expect(caps.modeDescription).not.toContain('Never modifies Actual');
     });
   });
 
@@ -2339,10 +2341,10 @@ describe('ActualConnector', () => {
   });
 
   // ==========================================================================
-  // 15. Regression: Observe sync is read-only in Observe mode
+  // 15. Observe refresh selection; SDK mocks do not establish lifecycle side effects.
   // ==========================================================================
 
-  describe('Observe sync is read-only', () => {
+  describe('Observe refresh uses download', () => {
     it('should NOT call client.sync() during synchronize() in Observe mode', async () => {
       mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
       mockClient.downloadBudget = vi.fn().mockResolvedValue(undefined);

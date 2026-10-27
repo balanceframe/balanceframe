@@ -1190,14 +1190,14 @@ export function parseArgs(argv: string[]): ParseResult {
     };
   }
 
-  if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'show') {
+  if (cleanArgs[0] === 'proposals' && (cleanArgs[1] === 'show' || cleanArgs[1] === 'preview')) {
     const proposalId = cleanArgs[2];
     if (!proposalId || proposalId.startsWith('--')) {
       return {
         ok: false,
         error: {
           code: 'missing_proposal_id',
-          message: 'proposals show requires a PROPOSAL_ID argument.',
+          message: `proposals ${cleanArgs[1]} requires a PROPOSAL_ID argument.`,
         },
       };
     }
@@ -1213,7 +1213,7 @@ export function parseArgs(argv: string[]): ParseResult {
     return {
       ok: true,
       cmd: {
-        command: 'proposals.show',
+        command: `proposals.${cleanArgs[1]}`,
         format,
         args: normalized,
         proposalId,

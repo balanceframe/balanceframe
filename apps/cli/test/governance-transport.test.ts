@@ -794,6 +794,7 @@ describe('production CLI governance transport', () => {
       { args: ['budget', 'summary'], method: 'GET', path: '/api/home/budget-summary' },
       { args: ['proposals', 'create', '--category-id', 'cat_1', '--message', 'Review'], method: 'POST', path: '/api/proposal', body: { categoryId: 'cat_1', message: 'Review' } },
       { args: ['proposals', 'show', 'prop_1'], method: 'GET', path: '/api/proposal/prop_1' },
+      { args: ['proposals', 'preview', 'prop_1'], method: 'POST', path: '/api/proposal/prop_1/preview' },
       { args: ['proposals', 'approve', 'prop_1', '--payload-hash', 'a'.repeat(64)], method: 'POST', path: '/api/proposal/prop_1/approve', body: { payloadHash: 'a'.repeat(64) }, humanControl: true },
       { args: ['proposals', 'execute', 'prop_1'], method: 'POST', path: '/api/proposal/prop_1/execute', humanControl: true },
       { args: ['proposals', 'list'], method: 'GET', path: '/api/proposal' },
