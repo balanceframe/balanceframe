@@ -1485,6 +1485,17 @@ export function parseArgs(argv: string[]): ParseResult {
   // Budget Intelligence commands
   // -----------------------------------------------------------------------
 
+  if (cleanArgs[0] === 'purchase' && cleanArgs[1] === 'explain') {
+    return parseFlagCommand(
+      'purchase.explain',
+      format,
+      normalized,
+      cleanArgs.slice(2),
+      ['category-id', 'amount', 'account-id', 'currency', 'purchase-at', 'required-by'],
+      ['category-id', 'amount'],
+    );
+  }
+
   // purchase evaluate --category-id CAT --amount AMT [--account-id ACC] [--currency CUR]
   if (cleanArgs[0] === 'purchase' && cleanArgs[1] === 'evaluate') {
     const options: Record<string, string> = {};

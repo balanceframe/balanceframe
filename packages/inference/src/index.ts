@@ -27,3 +27,5 @@ export * from './types.js'
 export * from './validators.js'
 
 export * from './receipt-item.js';
+
+export * from './decision-card-explanation.js';

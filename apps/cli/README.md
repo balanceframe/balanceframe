@@ -4,6 +4,27 @@ BalanceFrame CLI tool.
 
 Command-line interface for batch operations, testing, and automation.
 
+For an optional read-only explanation of a current purchase Decision Card:
+
+```sh
+balanceframe purchase explain --category-id CATEGORY_ID --amount 2000 \
+  --currency USD --account-id ACCOUNT_ID --json
+```
+
+The server evaluates the purchase under the current selected space and returns
+the canonical Card plus an advisory explanation or explicit manual fallback.
+`--purchase-at` and `--required-by` accept UTC timestamps. The CLI cannot supply
+a Card, endpoint, provider, identity or policy. Conversation is disabled by
+default; see [the server-owned boundary and operator configuration](../../docs/adr/0008-read-only-decision-card-explanation.md).
+No approval or financial mutation is implied by an explanation.
+
+The optional explanation command adds no explicit financial write operation.
+Its inherited Actual observer download/shutdown lifecycle is not yet qualified
+as producing zero financial writes; see [ADR 0008](../../docs/adr/0008-read-only-decision-card-explanation.md).
+The feature remains disabled by default and blocked from deployment pending that
+source-boundary decision. Publishing a draft does not authorize connecting a
+provider or sending financial data.
+
 Run `balanceframe --version` to print the CLI package version. This needs no
 configured server, selected space, or credentials.
 
