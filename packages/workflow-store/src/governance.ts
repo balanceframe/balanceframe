@@ -647,6 +647,8 @@ export class SpaceGovernance {
   }
   /** Internal preflight after trusted exact proposal authorization; no dispatch is admitted here. */
   preflightCategorizationDispatch(input: CategorizationDispatchAdmission): void { this.categorizationControls.preflight(input); }
+  /** Internal private simulation binding, available only after exact current execution admission. */
+  categorizationSimulationContext(input: CategorizationDispatchAdmission): string { return this.categorizationControls.contextHash(input); }
   /** Internal final dispatch fence after current authorization and human quorum revalidation. */
   admitCategorizationDispatch(input: CategorizationDispatchAdmission): void { this.categorizationControls.admit(input); }
   /** Internal restore fence; human re-enablement still needs fresh normal control authority. */

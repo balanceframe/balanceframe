@@ -1353,6 +1353,81 @@ describe('generic proposal approval and execution acquisition', () => {
     for (const variant of variants) expect(canonicalProposalHash(variant)).not.toBe(canonical);
   });
 
+  it('previews the exact current execution without claiming, consuming approvals or admitting a dispatch', async () => {
+    await setup({ operationApprovers: { set_category: 2 } });
+    const { proposal, approvals } = await createHumanApprovedProposal();
+    const input = acquisitionInput(proposal);
+    const changesBefore = testDatabase().prepare('SELECT total_changes() AS changes').get();
+    const preview = store.previewCategorizationExecution(input);
+    expect(preview).toMatchObject({ simulationOnly: true, approvalIds: approvals.map(({ id }) => id) });
+    expect(preview.contextHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(store.previewCategorizationExecution({ ...input, idempotencyKey: 'another-unused-preview-key' })).toEqual(preview);
+    expect(testDatabase().prepare('SELECT total_changes() AS changes').get()).toEqual(changesBefore);
+    expect(await store.getIdempotencyRecord(input.idempotencyKey)).toBeNull();
+    expect((await Promise.all(approvals.map(({ id }) => store.getApproval(id)))).map((approval) => approval?.status)).toEqual(['active', 'active']);
+    expect(testDatabase().prepare('SELECT COUNT(*) AS count FROM proposal_execution_acquisitions').get()).toEqual({ count: 0 });
+    expect(testDatabase().prepare('SELECT COUNT(*) AS count FROM categorization_dispatch_admissions').get()).toEqual({ count: 0 });
+    expect((await store.acquireProposalExecution(input)).claim.isOwner).toBe(true);
+    expect(() => store.previewCategorizationExecution(input)).toThrow(/already acquired/);
+  });
+
+  it('preview retains independent human quorum and actual bound credential checks', async () => {
+    await setup({ operationApprovers: { set_category: 2 } });
+    const proposal = await createProposal();
+    await approve(proposal, 'approver-a');
+    expect(store.previewCategorizationExecution(acquisitionInput(proposal))).toMatchObject({ status: 'approval_required', requiredApprovers: 2, approvalIds: [expect.any(String)] });
+    await expect(store.acquireProposalExecution(acquisitionInput(proposal))).rejects.toThrow(/Additional human approval/);
+    await approve(proposal, 'approver-b');
+    expect(() => store.previewCategorizationExecution(acquisitionInput(proposal, { actorId: 'approver-a', auth: auth('executor') }))).toThrow(/credentials/);
+    expect(await store.getIdempotencyRecord('execute:exact-proposal')).toBeNull();
+  });
+
+  it('preview binds current non-resetting agent controls and denies stop without any admission', async () => {
+    await setup({ operationApprovers: { set_category: 2 } });
+    const { proposal } = await createHumanApprovedProposal();
+    const space = governance.getSpace({ spaceId: proposal.spaceId! })!;
+    const owner = governance.getCurrentMembership({ spaceId: space.id, actorId: 'owner', now })!;
+    const agent = await bindAgentCredential(space.id, owner.id);
+    const input = acquisitionInput(proposal, { actorId: agent.actorId, auth: agent.auth });
+    const first = store.previewCategorizationExecution(input);
+    const parent = governance.listCategorizationControls({ spaceId: space.id, actorId: 'owner', now }).find((p) => p.agentId === null)!;
+    const next = governance.setCategorizationControls({ spaceId: space.id, agentId: null, expectedVersion: parent.version,
+      policy: parent.policy, auth: auth('owner'), now });
+    expect(store.previewCategorizationExecution(input).contextHash).not.toBe(first.contextHash);
+    governance.setCategorizationControls({ spaceId: space.id, agentId: null, expectedVersion: next.version,
+      policy: { ...next.policy, stopped: true }, auth: auth('owner'), now });
+    expect(() => store.previewCategorizationExecution(input)).toThrow(/stopped/);
+    expect(testDatabase().prepare('SELECT COUNT(*) AS count FROM categorization_dispatch_admissions').get()).toEqual({ count: 0 });
+  });
+
+  it('preview rejects proposal-only execution scope even while human quorum is pending', async () => {
+    const { space, membershipIds } = await setup({ operationApprovers: { set_category: 2 } });
+    const proposal = await createProposal();
+    const approval = await approve(proposal, 'approver-a');
+    governance.setResourceGrant({
+      spaceId: space.id, actorId: 'executor', budgetId, membershipId: membershipIds.executor!,
+      capability: 'categorization:execute', resourceKind: 'budget', resourceId: budgetId,
+      granted: true, restrictions: { proposalOnly: true }, now, auth: auth('owner'),
+    });
+    const changesBefore = testDatabase().prepare('SELECT total_changes() AS changes').get();
+    expect(() => store.previewCategorizationExecution(acquisitionInput(proposal))).toThrow(/Grant restrictions deny/);
+    expect(testDatabase().prepare('SELECT total_changes() AS changes').get()).toEqual(changesBefore);
+    expect((await store.getApproval(approval.id))?.status).toBe('active');
+  });
+
+  it('preview retains the agent execution denial while independent human quorum is pending', async () => {
+    const { space, membershipIds } = await setup({ operationApprovers: { set_category: 2 } });
+    const proposal = await createProposal();
+    const approval = await approve(proposal, 'approver-a');
+    const agent = await bindAgentCredential(space.id, membershipIds.owner!);
+    const changesBefore = testDatabase().prepare('SELECT total_changes() AS changes').get();
+    expect(() => store.previewCategorizationExecution(acquisitionInput(proposal, {
+      actorId: agent.actorId, auth: agent.auth,
+    }))).toThrow(/exact human approval/);
+    expect(testDatabase().prepare('SELECT total_changes() AS changes').get()).toEqual(changesBefore);
+    expect((await store.getApproval(approval.id))?.status).toBe('active');
+  });
+
   it('requires distinct approvals to satisfy the operation threshold before one executor can acquire', async () => {
     await setup({ operationApprovers: { set_category: 2 } });
     const proposal = await createProposal();
