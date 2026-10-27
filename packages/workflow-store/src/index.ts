@@ -197,3 +197,6 @@ export * from './evidence-item-rules.js';
 
 export { SpendSessionEvidenceWorkflow } from './spend-session-evidence.js';
 export type { SpendSessionReceiptAssociation } from './spend-session-evidence.js';
+
+export { categorizationControlPolicySchema } from './categorization-controls.js';
+export type { CategorizationControlPolicy, CategorizationControlVersion } from './categorization-controls.js';

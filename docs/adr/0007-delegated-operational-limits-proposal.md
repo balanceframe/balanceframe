@@ -1,8 +1,11 @@
 # ADR 0007 — Proposed operational delegation limits
 
-Status: **proposed; owner decision required before implementation**.
+Status: **accepted for Option A and the conservative controls below**, owner approval
+verified 2026-10-27 02:44 UTC. Option B remains unapproved and deferred.
 Source baseline: main `6fe0c2d4075d841bdc45d9d12ecda2e7a24df265`.
-No authorization, database, execution, provider or release behavior changes here.
+The accepted boundary retains existing human approvals and no provider connection.
+See [the controls implementation](../delegated-categorization.md) for its staged
+verification and still-open rollout/browser gates.
 
 ## Existing boundary to preserve
 
@@ -18,7 +21,7 @@ It must not create a second agent writer, inference authority or control plane.
 The next implementation slices are operational controls, simulation and one
 bounded rollout; this proposal separates the policy decisions they need.
 
-## Decisions requested
+## Accepted decisions and deferred alternative
 
 ### 1. First capability and execution authority
 

@@ -1,7 +1,7 @@
 import { defineEventHandler, getRouterParam, readBody, setCookie, setHeader, setResponseStatus } from 'h3';
 import type { H3Event } from 'h3';
 import { z } from 'zod';
-import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { SqliteWorkflowStore, CategorizationControlVersion } from '@balanceframe/workflow-store';
 import { getActorId, getWorkflowStore, errorEnvelope, okEnvelope, requireAuthorization, recordReadAdmission } from './workflow-store';
 import type { AuthorizationInfo, EventWithContext } from './workflow-store';
 import { getHumanControlAuth, type HumanControlAuth, type ReauthenticationEvent } from './reauthentication';
@@ -187,3 +187,9 @@ export function selectSpaceCookie(event: H3Event, spaceId: string): void {
 
 /** Reusable exact-value schemas shared by space-governance route handlers. */
 export { Capability, IsoTime, Restrictions, ResourceId, ResourceKind, SpaceKind };
+
+/** Public management projection excludes private budget identity and dispatch history. */
+export function projectCategorizationControl(value: CategorizationControlVersion) {
+  return { agentId: value.agentId, version: value.version, policy: value.policy,
+    actorId: value.actorId, createdAt: value.createdAt };
+}
