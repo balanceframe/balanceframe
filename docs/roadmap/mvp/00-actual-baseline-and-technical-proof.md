@@ -24,7 +24,7 @@ Using an unmodified Actual server and published API, prove:
 1. connection to a remote existing Actual instance and budget discovery/selection;
 2. encrypted and unencrypted download, synchronization, isolated cache lifecycle, cleanup, and disconnect;
 3. reads of accounts, categories, payees, transactions, rules, schedules, budget months/amounts/carryover/holds, tags, notes, and supported ActualQL/batch facilities;
-4. uncategorized transaction discovery and a strict Observe mode that permits no writes;
+4. uncategorized transaction discovery and Observe mode that rejects explicit application mutations; normal Actual SDK synchronization can upload pending changes or post configured schedules (see [ADR 0009](../../adr/0009-synchronization-capable-categorization-preview.md));
 5. disposable-budget bank sync; update of one transaction category; creation/removal of a test rule; and observation of Actual automatic rule learning after API updates;
 6. `importTransactions` dry-run behavior, reconciliation of a manual transaction with a matching import, duplicate imported IDs, rule-normalized payees, and export/restore;
 7. concurrent reads with a serialized per-budget write stream, interruption/retry behavior, and supported Actual version compatibility.

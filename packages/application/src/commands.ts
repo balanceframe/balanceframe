@@ -418,6 +418,7 @@ const KNOWN_COMMANDS: Array<{
   // Proposal commands
   { args: ['proposals', 'create'], command: 'proposals.create', route: 'analysis' },
   { args: ['proposals', 'show'], command: 'proposals.show', route: 'analysis' },
+  { args: ['proposals', 'preview'], command: 'proposals.preview', route: 'analysis' },
   { args: ['proposals', 'approve'], command: 'proposals.approve', route: 'analysis' },
   { args: ['proposals', 'execute'], command: 'proposals.execute', route: 'analysis' },
   { args: ['proposals', 'list'], command: 'proposals.list', route: 'analysis' },

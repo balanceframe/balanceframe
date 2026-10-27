@@ -1,6 +1,12 @@
 # Categorization simulation: blocked source boundary and decisions
 
-Status: **blocked before application/API/CLI/UI implementation**. Neither option
+Current status (2026-10-27): the owner approved the synchronization-capable,
+locally observed preview contract in [ADR 0009](adr/0009-synchronization-capable-categorization-preview.md).
+Implementation uses the existing SDK and discloses its possible financial effects.
+The historical investigation below is preserved; its two unapproved source options
+are superseded for this preview. Browser qualification remains open.
+
+Historical status: **blocked before application/API/CLI/UI implementation**. Neither option
 below is implemented or approved by this packet. No simulation report or financial
 write was created. The existing shared store preflight is a partial prerequisite;
 it is not a completed current-source simulation or rollout acceptance.

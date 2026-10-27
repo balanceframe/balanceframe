@@ -642,6 +642,8 @@ export async function runServerCommand(cmd: CliCommand, requestId: string): Prom
       );
     case 'proposals.show':
       return get(`/api/proposal/${encodeURIComponent(cmd.proposalId ?? '')}`);
+    case 'proposals.preview':
+      return post(`/api/proposal/${encodeURIComponent(cmd.proposalId ?? '')}/preview`);
     case 'proposals.approve':
       return post(
         `/api/proposal/${encodeURIComponent(cmd.proposalId ?? '')}/approve`,

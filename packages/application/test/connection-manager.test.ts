@@ -70,6 +70,61 @@ function managerWithDisconnect(disconnect: (connectorNumber: number) => Promise<
 }
 
 describe('ConnectionManager', () => {
+  it.each(['owner-cleanup', 'credential-load', 'connector-factory', 'connect'] as const)(
+    'rechecks source admission after asynchronous %s before further SDK access', async (phase) => {
+      let current = true;
+      const first = managerWithDisconnect(async () => { if (phase === 'owner-cleanup') current = false; });
+      const connector = { ...fakeConnector(),
+        connect: vi.fn(async () => { if (phase === 'connect') current = false; return []; }),
+        selectBudget: vi.fn(fakeConnector().selectBudget),
+      };
+      const factory = vi.fn(async () => { if (phase === 'connector-factory') current = false; return connector; });
+      const second = new ConnectionManager({
+        readFile: async () => JSON.stringify({ version: 1, serverUrl: 'http://actual', budgetId: 'budget-1', budgetName: 'Test', groupId: 'group-1' }),
+        credentialStore: { load: async () => { if (phase === 'credential-load') current = false; return { serverUrl: 'http://actual', secretKey: 'synthetic' }; }, store: async () => {} },
+        connectorFactory: factory,
+      });
+      try {
+        await first.manager.withConnection(async () => {});
+        await expect(second.withConnection(async () => 'private result', {
+          assertCurrent: () => { if (!current) throw new Error('Source admission revoked'); },
+        })).rejects.toThrow('Source admission revoked');
+        expect(factory).toHaveBeenCalledTimes(phase === 'connector-factory' || phase === 'connect' ? 1 : 0);
+        expect(connector.connect).toHaveBeenCalledTimes(phase === 'connect' ? 1 : 0);
+        expect(connector.selectBudget).not.toHaveBeenCalled();
+      } finally {
+        await first.manager.disconnect();
+        await second.disconnect();
+      }
+    },
+  );
+  it('rechecks queued source admission before flushing another owner or opening a connector', async () => {
+    const first = managerWithDisconnect(async () => {});
+    const second = managerWithDisconnect(async () => {});
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const ownerDisconnect = vi.fn(async () => {});
+    first.connectorFactory.mockImplementation(async () => ({ ...fakeConnector(), disconnect: ownerDisconnect }));
+    const reading = first.manager.withConnection(async () => { entered(); await gate; });
+    await ready;
+    let current = true;
+    const assertCurrent = vi.fn(() => { if (!current) throw new Error('Source admission revoked'); });
+    const queued = second.manager.withConnection(async () => 'private result', { assertCurrent });
+    current = false;
+    release();
+    try {
+      await reading;
+      await expect(queued).rejects.toThrow('Source admission revoked');
+      expect(assertCurrent).toHaveBeenCalledTimes(1);
+      expect(ownerDisconnect).not.toHaveBeenCalled();
+      expect(second.connectorFactory).not.toHaveBeenCalled();
+    } finally {
+      await first.manager.disconnect();
+      await second.manager.disconnect();
+    }
+  });
   it('restores and reuses a merchant connection without broad synchronization before source admission', async () => {
     const client: ActualClient = {
       init: vi.fn(), shutdown: vi.fn(), sync: vi.fn(), loadBudget: vi.fn(), downloadBudget: vi.fn(),
