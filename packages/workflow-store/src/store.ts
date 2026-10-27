@@ -60,6 +60,7 @@ import type {
   CreateIdempotencyInput,
   ProposalApprovalSummary,
   ProposalExecutionAcquisition,
+  CategorizationExecutionPreview,
   RuleActionPayload,
   ConsequentialActionPayload,
   ConsequentialActionState,
@@ -6060,16 +6061,26 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.acquireProposalExecutionSync({ ...input, now: nowISO() }, input.acquisitionAuditId);
   }
 
+  /** Reuses execution preflight and stops before every claim, approval consumption and dispatch. */
+  previewCategorizationExecution(input: AcquireProposalExecutionInput): CategorizationExecutionPreview {
+    return this.acquireProposalExecutionSync(input, undefined, true);
+  }
+
+  private acquireProposalExecutionSync(input: AcquireProposalExecutionInput, acquisitionAuditId?: string): ProposalExecutionAcquisition;
+  private acquireProposalExecutionSync(input: AcquireProposalExecutionInput, acquisitionAuditId: undefined, preview: true): CategorizationExecutionPreview;
   private acquireProposalExecutionSync(
     input: AcquireProposalExecutionInput,
     acquisitionAuditId?: string,
-  ): ProposalExecutionAcquisition {
+    preview = false,
+  ): ProposalExecutionAcquisition | CategorizationExecutionPreview {
     return this.db
       .transaction(() => {
         const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
         if (!proposal || !isGenericProposalOperation(proposal.operation))
         throw new ProposalAcquisitionError('authorization_denied', 'Generic proposal not found');
         const operation = proposal.operation as GenericProposalOperation;
+        if (preview && operation !== 'set_category')
+          throw new ProposalAcquisitionError('authorization_denied', 'Only categorization simulation is supported');
         const now = input.now ?? nowISO();
         const nowMillis = timestampMillis(now);
         const expiresAt = timestampMillis(proposal.expires_at);
@@ -6082,6 +6093,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
         existingAcquisition?.idempotency_key === input.idempotencyKey
           ? (this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined)
           : undefined;
+        if (preview && existingAcquisition)
+          throw new ProposalAcquisitionError('idempotency_in_progress', 'Proposal execution was already acquired; use read-only recovery');
         const completedReplay =
         acquisitionAuditId === undefined &&
         existingAcquisition?.actor_id === input.actorId &&
@@ -6353,7 +6366,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         selectedApprovals = [selected, ...eligible.filter((approval) => approval.id !== selected.id)];
       }
         selectedApprovals = selectedApprovals.slice(0, requiredApprovers);
-        if (selectedApprovals.length < requiredApprovers)
+        if (!preview && selectedApprovals.length < requiredApprovers)
         throw new ProposalAcquisitionError('approval_required', 'Additional human approval is required');
 
         const executionAuthorization = this.authorizeGenericProposal({
@@ -6371,7 +6384,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         facts,
         payload,
         now,
-        verifiedHumanApproval: true,
+        ...(selectedApprovals.length >= requiredApprovers ? { verifiedHumanApproval: true as const } : {}),
       });
         if (!executionAuthorization.allowed)
         throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
@@ -6379,6 +6392,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
         if (delegatedCategorization) {
           try { this.governance.preflightCategorizationDispatch(delegatedCategorization); }
           catch (error) { throw new ProposalAcquisitionError('authorization_denied', error instanceof Error ? error.message : 'Categorization admission unavailable'); }
+        }
+
+        if (preview) {
+          const identity = input.auth.method === 'api-key'
+            ? { method: input.auth.method, actorId: input.auth.actorId, credentialId: input.auth.credentialId,
+              principalType: input.auth.principalType, credentialOwnerId: input.auth.credentialOwnerId,
+              ...(input.auth.principalType === 'agent' ? { delegationId: input.auth.delegationId, delegationVersion: input.auth.delegationVersion } : {}) }
+            : { method: input.auth.method, actorId: input.auth.actorId, sessionId: input.auth.sessionId };
+          return { simulationOnly: true, status: selectedApprovals.length >= requiredApprovers ? 'would_execute' : 'approval_required', requiredApprovers, approvalIds: selectedApprovals.map((approval) => approval.id),
+            contextHash: createHash('sha256').update(canonicalProposalJson({
+              proposalId: proposal.id, payloadHash: proposal.payload_hash, governancePolicyVersion,
+              identity, requiredApprovers, approvalIds: selectedApprovals.map((approval) => approval.id).sort(),
+              authorization: executionAuthorization.disposition,
+              controls: delegatedCategorization ? this.governance.categorizationSimulationContext(delegatedCategorization) : null,
+            })).digest('hex') } satisfies CategorizationExecutionPreview;
         }
 
         const leaseExpiresAt = operation === 'consequential_action'

@@ -86,6 +86,7 @@ export type {
   AcquireProposalExecutionInput,
   ValidateAcquiredProposalExecutionInput,
   ProposalExecutionAcquisition,
+  CategorizationExecutionPreview,
   GenericActionProposal,
   CurrentHumanApproval,
   GetProposalApprovalSummaryInput,
