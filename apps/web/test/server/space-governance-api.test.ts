@@ -247,6 +247,16 @@ afterEach(() => {
 });
 
 describe('space governance HTTP controls', () => {
+  it('rejects malformed categorization caps as caller input without writing a policy', async () => {
+    const event = request({ params: { id: spaceId }, body: { agentId: null, expectedVersion: null,
+      policy: { enabled: true, stopped: false, cooldownSeconds: 0,
+        caps: [{ window: 'day', maxOperations: 1, maxMagnitude: [{ currency: 'USD', minorUnits: 'not-an-integer' }] }] } } });
+    event.context.controlProof = true;
+    expectDenied(await routes.setCategorizationControls(event));
+    expect(event.statusCode).toBe(400);
+    expect(store.governance.listCategorizationControls({ spaceId, actorId: 'owner', now })).toEqual([]);
+  });
+
   it('keeps categorization controls human-controlled, selected-space-bound and free of dispatch disclosures', async () => {
     const body = { agentId: null, expectedVersion: null, policy: { enabled: true, stopped: false, cooldownSeconds: 0,
       caps: [{ window: 'day', maxOperations: 2, maxMagnitude: [{ currency: 'USD', minorUnits: '100' }] }] } };

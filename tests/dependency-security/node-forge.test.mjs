@@ -6,8 +6,9 @@ import { test } from 'node:test';
 const root = process.env.BALANCEFRAME_FORGE_TEST_ROOT || resolve(import.meta.dirname, '../..');
 const webRequire = createRequire(join(root, 'apps/web/package.json'));
 const nuxtRequire = createRequire(webRequire.resolve('nuxt/package.json'));
-const cliRequire = createRequire(nuxtRequire.resolve('@nuxt/cli'));
-const listhenRequire = createRequire(cliRequire.resolve('listhen'));
+const serverRequire = createRequire(nuxtRequire.resolve('@nuxt/nitro-server/package.json'));
+const nitroRequire = createRequire(serverRequire.resolve('nitropack/package.json'));
+const listhenRequire = createRequire(nitroRequire.resolve('listhen'));
 // An isolated package copy allows red/green probes without changing installed dependencies.
 const forgeRequire = process.env.BALANCEFRAME_FORGE_TEST_PACKAGE
   ? createRequire(join(resolve(process.env.BALANCEFRAME_FORGE_TEST_PACKAGE), 'package.json'))
@@ -32,7 +33,7 @@ function parserSignature(algorithmHex) {
   return forge.util.hexToBytes('0001' + 'ff'.repeat(128 - digestInfo.length - 3) + '00') + digestInfo;
 }
 
-test('Nuxt CLI/listhen resolves node-forge at the approved unchanged version', () => {
+test('Nuxt Nitro/listhen resolves node-forge at the approved unchanged version', () => {
   assert.equal(listhenRequire('node-forge/package.json').version, '1.4.0');
   assert.equal(forgeRequire('./package.json').version, '1.4.0');
 });
