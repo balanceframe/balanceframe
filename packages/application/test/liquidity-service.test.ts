@@ -1617,8 +1617,12 @@ describe('authoritative application liquidity service', () => {
     },
   );
 
-  it.each(['parent', 'nested child'] as const)(
-    'keeps a lost-acknowledgement completion held when Actual retains a %s error',
+  it.each([
+    'parent', 'nested child', 'unmarked split parent', 'missing split parent flag',
+    'unmarked flat split parent', 'missing flat split parent flag',
+    'unmarked split parent shadowed by tombstone',
+  ] as const)(
+    'keeps a lost-acknowledgement completion held when Actual retains invalid %s source facts',
     async (location) => {
       current = snapshot(20000, '2026-09-06T10:00:00.000Z', false, 15000, 2000);
       await service.saveObservations(actor, {
@@ -1684,9 +1688,19 @@ describe('authoritative application liquidity service', () => {
           parent.subtransactions = parent.subtransactions?.map((child, index) => ({
             ...child, id: `manual-error-child-${index}`,
           }));
-          const erroneous = location === 'parent' ? parent : parent.subtransactions![0]!;
-          erroneous.error = { type: 'SplitTransactionError', version: 1, difference: 0 };
-          rows.push(parent);
+          if (location.includes('split parent')) {
+            if (location.startsWith('missing')) delete parent.is_parent;
+            else parent.is_parent = false;
+          } else {
+            const erroneous = location === 'parent' ? parent : parent.subtransactions![0]!;
+            erroneous.error = { type: 'SplitTransactionError', version: 1, difference: 0 };
+          }
+          if (location.includes('flat')) {
+            const children = parent.subtransactions!;
+            delete parent.subtransactions;
+            rows.push(parent, ...children);
+          } else rows.push(parent);
+          if (location.endsWith('tombstone')) rows.push({ ...parent, tombstone: true, is_parent: true });
           throw new Error('Synthetic acknowledgement lost after persistence');
         }),
         createAccount: vi.fn().mockResolvedValue('unused'),
@@ -1741,6 +1755,7 @@ describe('authoritative application liquidity service', () => {
           payloadHash: proposed.payloadHash!, expectedVersion: uncertain.version,
           idempotencyKey: `error-recovery:${location}`,
         })).rejects.toThrow(/Complete account and transaction coverage/);
+        expect(current.coverage.transactions).toBe('partial');
         expect((await writable.sessionCompletion(actor, proposed.id)).phase).toBe('review_required');
         expect(store.liquidity.getClaimSet({ ...actor, now }).bundles.map(({ state }) => state))
           .toEqual(['initiated']);
@@ -1750,9 +1765,13 @@ describe('authoritative application liquidity service', () => {
         expect(client.addTransactions).toHaveBeenCalledTimes(1);
 
         const persisted = rows[0]!;
-        persisted.error = null;
-        for (const child of persisted.subtransactions ?? []) child.error = null;
+        if (location.includes('split parent')) persisted.is_parent = true;
+        else {
+          persisted.error = null;
+          for (const child of persisted.subtransactions ?? []) child.error = null;
+        }
         current = (await connector.synchronize({ refresh: false })).financialSnapshot;
+        expect(current.coverage.transactions).toBe('complete');
         const recovered = await writable.reconcileSessionCompletion(actor, proposed.id, {
           payloadHash: proposed.payloadHash!, expectedVersion: uncertain.version,
           idempotencyKey: `corrected-recovery:${location}`,

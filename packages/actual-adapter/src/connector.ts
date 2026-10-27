@@ -2668,20 +2668,30 @@ export class ActualConnector implements BudgetLedger {
     }
     const allRawTransactions: TransactionEntity[] = [];
     const transactions: Transaction[] = [];
+    let splitParentFactsIncomplete = false;
     for (const transactionRead of transactionReads) {
       if (!transactionRead.read.available) continue;
       if (activeAccountIds.has(transactionRead.accountId)) {
         for (const transaction of transactionRead.read.items) allRawTransactions.push(transaction);
       }
-      for (const transaction of normalizeTransactions(
+      const normalized = normalizeTransactions(
         transactionRead.read.items,
         payeeMap,
         categoryMap,
         transferAcctMap,
         this.currency,
-      )) {
-        transactions.push(transaction);
+      );
+      if (activeAccountIds.has(transactionRead.accountId)) {
+        const splitParentIds = new Set(normalized
+          .filter((transaction) => transaction.subtransactions.length > 0)
+          .map((transaction) => transaction.id));
+        // Normalized children do not prove Actual marked their live parent as a split.
+        if (splitParentIds.size > 0) {
+          splitParentFactsIncomplete ||= transactionRead.read.items.some((transaction) =>
+            !transaction.tombstone && splitParentIds.has(transaction.id) && transaction.is_parent !== true);
+        }
       }
+      for (const transaction of normalized) transactions.push(transaction);
     }
     const activeTransactionReads = transactionReads.filter(({ accountId }) =>
       activeAccountIds.has(accountId),
@@ -2762,7 +2772,7 @@ export class ActualConnector implements BudgetLedger {
       const readableAccounts = activeTransactionReads.filter(({ read }) => read.available).length;
       if (readableAccounts === 0) {
         transactionCoverage = 'unknown';
-      } else if (readableAccounts < activeAccounts.length ||
+      } else if (readableAccounts < activeAccounts.length || splitParentFactsIncomplete ||
           allRawTransactions.some(hasActualTransactionError)) {
         transactionCoverage = 'partial';
       } else {
