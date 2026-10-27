@@ -152,11 +152,14 @@ The pinned build was attempted with a private writable Docker client
 configuration because the environment's home directory is read-only:
 
 ```sh
+(
+set -e
 ocr_docker_config=$(mktemp -d)
+trap 'rm -rf -- "$ocr_docker_config"' EXIT
 DOCKER_CONFIG="$ocr_docker_config" docker build --progress=plain \
   -t balanceframe-ocr-qualification:20261027 \
   -f packages/receipt-ocr/Dockerfile .
-rm -rf -- "$ocr_docker_config"
+)
 ```
 
 The Node base image resolved to
