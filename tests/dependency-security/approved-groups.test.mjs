@@ -72,7 +72,17 @@ test('source-map-js rejects excessive and invalid indexed offsets before generat
 });
 
 test('SVGO removeScripts strips namespace and control-character executable links', () => {
-  const ownerRequire = createRequire(require.resolve('postcss-svgo/package.json'));
+  let owner;
+  try { owner = require.resolve('postcss-svgo/package.json'); }
+  catch (error) {
+    assert.equal(error.code, 'MODULE_NOT_FOUND');
+    // Nuxt 4.6's cssnano 9 no longer contains the SVGO integration.
+    const lock = readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8');
+    assert.doesNotMatch(lock, /^  (?:postcss-svgo|svgo)@/m);
+    assert.match(require('cssnano/package.json').version, /^9\./);
+    return;
+  }
+  const ownerRequire = createRequire(owner);
   const { optimize } = ownerRequire('svgo');
   for (const source of [
     '<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg"><s:a href="javascript:MARKER"><text>Budget</text></s:a></svg>',
