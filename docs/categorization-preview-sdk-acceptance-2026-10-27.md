@@ -87,6 +87,19 @@ the adapter gateway passed 139. Production build, root/Nuxt types, lint and the
 isolated production SDK/SQLite bundle check pass. These gates do not replace
 authenticated source-browser acceptance.
 
+A later final 26.7 qualification exposed a fixture clock race: the action's
+`now` could be sampled one millisecond before the helper sampled its
+`reauthenticatedAt`. Governance correctly rejected that future authentication.
+The fixture now captures reauthentication once before its control operations,
+with real clocks/timers and all five-minute freshness guards unchanged. The
+failing evidence remains in
+`/tmp/balanceframe-category-preview-final-reviewed-production-26.7-*20261027.*`.
+The corrected production test passes on both 26.7 and 26.10; evidence uses the
+distinct `balanceframe-category-preview-clock-fixed-production-26.7` and
+`balanceframe-category-preview-clock-fixed-production-26.10` log/result prefixes.
+Independent review approved this fixture-only correction; no assertion,
+production behavior, security window or timeout was changed.
+
 No automatic retries or rate-limit changes are configured. Earlier fixture
 corrections are retained in the `audited`, `realtime`, `pending`, and `fenced`
 log/result families: read-admission audit accounting, daily schedule-service
