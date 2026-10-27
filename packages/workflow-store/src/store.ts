@@ -1,3 +1,5 @@
+import { migrateCategorizationControls } from './categorization-controls.js';
+import type { CategorizationDispatchAdmission } from './categorization-controls.js';
 import { migrateSpendSessionEvidence } from './spend-session-evidence.js';
 import { migrateEvidenceItemRules } from './evidence-item-rules.js';
 /**
@@ -1350,6 +1352,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         .transaction(() => {
           reconcileMerchantRestore(restored!.db, input.now);
           restored!.evidence.quarantineRestore(input.now);
+          restored!.governance.quarantineCategorizationRestore(input.now);
         })
         .immediate();
       restored.db.pragma('wal_checkpoint(TRUNCATE)');
@@ -2043,6 +2046,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     migrateEvidenceLedgerProvenance,
     migrateEvidenceItemRules,
     migrateSpendSessionEvidence,
+    migrateCategorizationControls,
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -6161,6 +6165,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
         }
         if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, preconditions, policy.version, now))
         throw new ProposalAcquisitionError('authorization_denied', 'Proposal origin authority is no longer current');
+        let delegatedCategorization: CategorizationDispatchAdmission | null = null;
+        if (operation === 'set_category' && input.auth.method === 'api-key' && input.auth.principalType === 'agent') {
+          // The categorization writer dispatches one category effect; complete composite authorization above remains mandatory.
+          const effectFacts = deriveProposalAuthorizationFacts('set_category', isPlainRecord(payload)
+            ? { kind: 'set_category', transactionId: payload.transactionId, categoryId: payload.categoryId } : null, preconditions);
+          const effect = effectFacts.operations[0];
+          if (effectFacts.operations.length !== 1 || effect?.operation !== 'set_category' || !effect.amount)
+            throw new ProposalAcquisitionError('authorization_denied', 'Delegated categorization requires one exact source amount');
+          delegatedCategorization = {
+            spaceId, budgetId: proposal.budget_id, agentId: input.auth.actorId,
+            delegationId: input.auth.delegationId, delegationVersion: input.auth.delegationVersion,
+            proposalId: proposal.id, payloadHash: proposal.payload_hash, idempotencyKey: input.idempotencyKey,
+            amount: effect.amount, now,
+          };
+        }
         const serializedProposal = JSON.stringify({ operation, payload, preconditions });
         if (serializedProposal !== input.serialisedEffect)
         throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Execution effect differs from proposal');
@@ -6274,6 +6293,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
             if (!executionAuthorization.allowed)
         throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
             this.assertBudgetMutationOwnerAvailable(proposal.budget_id, proposal.id);
+            if (delegatedCategorization) {
+              try { this.governance.admitCategorizationDispatch(delegatedCategorization); }
+              catch (error) { throw new ProposalAcquisitionError('authorization_denied', error instanceof Error ? error.message : 'Categorization admission unavailable'); }
+            }
           }
           return {
           claim: { record: rowToIdempotency(existing), isOwner: false },
@@ -6352,6 +6375,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
       });
         if (!executionAuthorization.allowed)
         throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
+
+        if (delegatedCategorization) {
+          try { this.governance.preflightCategorizationDispatch(delegatedCategorization); }
+          catch (error) { throw new ProposalAcquisitionError('authorization_denied', error instanceof Error ? error.message : 'Categorization admission unavailable'); }
+        }
 
         const leaseExpiresAt = operation === 'consequential_action'
         ? proposal.expires_at
@@ -6924,15 +6952,24 @@ export class SqliteWorkflowStore implements WorkflowStore {
         ? 'retryable_failed'
         : 'terminal_failed'
       : 'succeeded';
-    this.stmt.completeIdempotencyStmt.run({
-      key,
-      status,
-      errorMessage: errorMessage ?? null,
-      serialisedResult: status === 'succeeded' ? (serialisedResult ?? null) : null,
-      now,
-    });
-    const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow;
-    return rowToIdempotency(row);
+    return this.db.transaction(() => {
+      this.stmt.completeIdempotencyStmt.run({
+        key, status, errorMessage: errorMessage ?? null,
+        serialisedResult: status === 'succeeded' ? (serialisedResult ?? null) : null, now,
+      });
+      const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow;
+      if (row.idempotency_status === 'succeeded' && row.operation === 'set_category' && row.serialised_result) {
+        let verified: unknown;
+        try { verified = JSON.parse(row.serialised_result) as unknown; } catch { verified = null; }
+        const proposal = this.stmt.selectProposal.get(row.proposal_id) as ProposalRow | undefined;
+        let payload: unknown;
+        try { payload = proposal ? JSON.parse(proposal.payload) as unknown : null; } catch { payload = null; }
+        if (isPlainRecord(verified) && verified.verified === true && isPlainRecord(payload) &&
+          verified.transactionId === payload.transactionId && verified.newCategoryId === payload.categoryId)
+          this.governance.recordCategorizationVerified(key);
+      }
+      return rowToIdempotency(row);
+    }).immediate();
   }
 
   async findStrandedIdempotencyRecords(): Promise<IdempotencyRecord[]> {
@@ -8093,6 +8130,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
       reasons.push(
         `${governanceHistory.count} space identity, membership, grant, delegation, policy and audit record(s) retained`,
       );
+    const categorizationPolicies = db.prepare(`SELECT COUNT(*) AS count FROM categorization_control_versions
+      WHERE space_id=@spaceId AND budget_id=@budgetId`).get(params) as { count: number };
+    retainedCount += categorizationPolicies.count;
+    if (categorizationPolicies.count > 0)
+      reasons.push(`${categorizationPolicies.count} categorization control policy record(s) retained with administrator attribution`);
+    const categorizationAdmissions = db.prepare(`SELECT COUNT(*) AS count FROM categorization_dispatch_admissions
+      WHERE space_id=@spaceId AND budget_id=@budgetId`).get(params) as { count: number };
+    retainedCount += categorizationAdmissions.count;
+    if (categorizationAdmissions.count > 0)
+      reasons.push(`${categorizationAdmissions.count} delegated categorization dispatch record(s) retained to preserve shared limits and uncertain outcomes`);
+
     const receiptInferencePolicyRecords = db
       .prepare(`
         SELECT COUNT(*) AS count FROM transaction_evidence_decisions

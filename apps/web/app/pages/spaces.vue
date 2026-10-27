@@ -125,6 +125,22 @@
       </table></div>
     </section>
 
+    <section v-if="categorizationControls" class="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
+      <h2 class="text-lg font-semibold">Categorization automation limits</h2>
+      <p class="mt-1 text-sm">Independent human approvals remain required. Parent and agent limits both apply. Calendar windows use UTC; money is counted separately per currency without netting.</p>
+      <p class="mt-1 text-sm">A stop denies later admissions. An already admitted handoff may still be in flight; uncertain outcomes block new delegated categorization until authorized read-only recovery.</p>
+      <p v-if="connectionControl?.budgetBound === false" class="mt-3 text-sm">Connect and bind a budget before configuring categorization automation.</p>
+      <form v-if="connectionControl?.budgetBound !== false" data-testid="categorization-controls" class="mt-4 space-y-3" @submit.prevent="saveCategorizationControls">
+        <label class="block text-sm">Scope<select v-model="categorizationScope" aria-label="Categorization control scope" class="block rounded border px-3 py-2 dark:bg-gray-950" @change="selectCategorizationControls"><option value="">All agents — parent limit</option><option v-for="agentId in categorizationAgentIds" :key="agentId" :value="agentId">{{ agentId }}</option></select></label>
+        <label class="flex items-center gap-2 text-sm"><input v-model="categorizationEnabled" aria-label="Enable delegated categorization" type="checkbox" /> Enable this categorization scope</label>
+        <label class="flex items-center gap-2 text-sm"><input v-model="categorizationStopped" aria-label="Stop delegated categorization" type="checkbox" /> Stop this scope</label>
+        <label class="block text-sm">Cooldown seconds<input v-model.number="categorizationCooldown" aria-label="Categorization cooldown seconds" type="number" min="0" max="86400" step="1" class="block rounded border px-3 py-2 dark:bg-gray-950" /></label>
+        <label class="block text-sm">UTC calendar caps (JSON array)<textarea v-model="categorizationCaps" aria-label="Categorization UTC caps" rows="4" spellcheck="false" class="block w-full rounded border px-3 py-2 font-mono text-xs dark:bg-gray-950" /></label>
+        <p class="text-xs">Each cap names day, week or month, maxOperations, and maxMagnitude entries with currency and exact minorUnits. Both parent and selected agent must be explicitly enabled; an omitted currency is refused.</p>
+        <button type="submit" :disabled="busy" class="rounded border px-4 py-2 text-sm disabled:opacity-50">Save categorization controls</button>
+      </form>
+    </section>
+
     <section v-if="agents" class="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
       <h2 class="text-lg font-semibold">Independent agents</h2>
       <form class="mt-4 flex flex-wrap items-end gap-3" @submit.prevent="registerAgent">
@@ -228,6 +244,24 @@ const Delegation = z.object({
   validFrom: z.string(), validUntil: z.string().nullable(), revokedAt: z.string().nullable(),
 }).passthrough();
 const DelegationList = z.object({ delegations: z.array(Delegation) });
+const CategorizationControls = z.object({
+  agentId: z.string().nullable(), version: z.string(),
+  actorId: z.string(), createdAt: z.string(),
+  policy: z.object({ enabled: z.boolean(), stopped: z.boolean(), cooldownSeconds: z.number(), caps: z.array(z.unknown()) }),
+});
+const CategorizationControlsList = z.object({ policies: z.array(CategorizationControls) });
+const categorizationControls = ref<z.infer<typeof CategorizationControls>[] | null>(null);
+const categorizationScope = ref('');
+const categorizationEnabled = ref(false);
+const categorizationStopped = ref(true);
+const categorizationCooldown = ref(0);
+const categorizationCaps = ref('[]');
+const categorizationAgentIds = computed(() => [...new Set([
+  ...(agents.value?.map((agent) => agent.agentId) ?? []),
+  ...(delegations.value?.map((delegation) => delegation.agentId) ?? []),
+  ...(categorizationControls.value?.flatMap((control) => control.agentId ? [control.agentId] : []) ?? []),
+])].sort());
+
 const Credential = z.object({
   id: z.string(), credentialId: z.string(), principalType: z.enum(['human', 'agent']), principalId: z.string(), revokedAt: z.string().nullable(),
 }).passthrough();
@@ -355,7 +389,7 @@ async function loadDirectory(): Promise<void> {
 async function loadControls(): Promise<void> {
   if (!selectedSpaceId.value) return;
   const selected = base.value;
-  const [memberResult, grantResult, policyResult, agentResult, delegationResult, credentialResult, auditResult, connectionResult] = await Promise.all([
+  const [memberResult, grantResult, policyResult, agentResult, delegationResult, credentialResult, auditResult, connectionResult, categorizationResult] = await Promise.all([
     controlData(`${selected}/memberships`, MembershipList),
     controlData(`${selected}/grants`, GrantList),
     controlData(`${selected}/policy`, PolicyView),
@@ -364,6 +398,7 @@ async function loadControls(): Promise<void> {
     controlData(`${selected}/credentials`, CredentialList),
     controlData(`${selected}/audit`, Audit),
     controlData(`${selected}/connection`, ConnectionStatus),
+    controlData(`${selected}/categorization-controls`, CategorizationControlsList),
   ]);
   memberships.value = memberResult?.memberships ?? null;
   grants.value = grantResult?.grants ?? null;
@@ -372,6 +407,8 @@ async function loadControls(): Promise<void> {
   delegations.value = delegationResult?.delegations ?? null;
   credentials.value = credentialResult?.credentials ?? null;
   connectionControl.value = connectionResult;
+  categorizationControls.value = categorizationResult?.policies ?? null;
+  selectCategorizationControls();
   assistanceMaximum.value = policyResult?.policy?.assistanceMaximum ?? 'analysis_only';
   if (policyResult?.policy) {
     minimumApprovers.value = policyResult.policy.minimumApprovers;
@@ -530,6 +567,26 @@ async function revokeGrant(grant: GrantRecord): Promise<void> {
       resourceId: grant.resourceId, granted: false,
     },
   });
+}
+
+function selectCategorizationControls(): void {
+  const current = categorizationControls.value?.find((value) => value.agentId === (categorizationScope.value || null));
+  categorizationEnabled.value = current?.policy.enabled ?? false;
+  categorizationStopped.value = current?.policy.stopped ?? true;
+  categorizationCooldown.value = current?.policy.cooldownSeconds ?? 0;
+  categorizationCaps.value = JSON.stringify(current?.policy.caps ?? [], null, 2);
+}
+
+async function saveCategorizationControls(): Promise<void> {
+  try {
+    const agentId = categorizationScope.value || null;
+    const current = categorizationControls.value?.find((value) => value.agentId === agentId);
+    await mutation(`${base.value}/categorization-controls`, z.object({ policy: CategorizationControls }), {
+      method: 'PUT', body: { agentId, expectedVersion: current?.version ?? null,
+        policy: { enabled: categorizationEnabled.value, stopped: categorizationStopped.value,
+          cooldownSeconds: categorizationCooldown.value, caps: parseJson(categorizationCaps.value, 'Categorization caps') } },
+    });
+  } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Categorization caps are invalid.'; }
 }
 
 async function savePolicy(): Promise<void> {

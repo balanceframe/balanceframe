@@ -604,6 +604,13 @@ async function bindAgentCredential(
   }
 
   governance.registerAgent({ spaceId, agentId, now, auth: auth(issuerActorId) });
+  for (const scope of [null, agentId]) governance.setCategorizationControls({
+    spaceId, agentId: scope, expectedVersion: governance.listCategorizationControls({ spaceId, actorId: issuerActorId, now })
+      .find((value) => value.agentId === scope)?.version ?? null,
+    policy: { enabled: true, stopped: false, cooldownSeconds: 0,
+      caps: [{ window: 'day', maxOperations: 100, maxMagnitude: [{ currency: 'USD', minorUnits: '1000000' }] }] },
+    now, auth: auth(issuerActorId),
+  });
   const rights = delegatedResources.flatMap((resource) =>
     delegatedCapabilities.map((capability) => ({ capability, ...resource })),
   );
@@ -1383,6 +1390,61 @@ describe('generic proposal approval and execution acquisition', () => {
         .filter((audit) => audit.classification === 'execution_started')).toHaveLength(1);
     },
   );
+
+  it('denies disabled delegated categorization before consuming human approvals or acquiring a claim', async () => {
+    const fixture = await setup({ operationApprovers: { set_category: 1 } });
+    const { agent, proposal } = await createAgentOriginProposal(fixture.space.id, fixture.membershipIds.owner!);
+    const current = governance.listCategorizationControls({ spaceId: fixture.space.id, actorId: 'owner', now })
+      .find((value) => value.agentId === null)!;
+    governance.setCategorizationControls({ spaceId: fixture.space.id, agentId: null, expectedVersion: current.version,
+      policy: { ...current.policy, enabled: false }, now, auth: auth('owner') });
+    const approval = await approve(proposal, 'approver-a');
+    const input = acquisitionInput(proposal, { actorId: agent.actorId, auth: agent.auth });
+    await expect(store.acquireProposalExecution(input)).rejects.toMatchObject({ reasonCode: 'authorization_denied' });
+    expect((await store.getApproval(approval.id))?.status).toBe('active');
+    expect(await store.getIdempotencyRecord(input.idempotencyKey)).toBeNull();
+  });
+
+  it('rechecks stop and human approvals at final dispatch, retaining a single uncertain admission', async () => {
+    const fixture = await setup({ operationApprovers: { set_category: 2 } });
+    const { agent, proposal } = await createAgentOriginProposal(fixture.space.id, fixture.membershipIds.owner!);
+    await approve(proposal, 'approver-a');
+    const input = acquisitionInput(proposal, { actorId: agent.actorId, auth: agent.auth });
+    await expect(store.acquireProposalExecution(input)).rejects.toMatchObject({ reasonCode: 'approval_required' });
+    expect(await store.getIdempotencyRecord(input.idempotencyKey)).toBeNull();
+    await approve(proposal, 'approver-b');
+    const acquired = await store.acquireProposalExecution(input);
+    const current = governance.listCategorizationControls({ spaceId: fixture.space.id, actorId: 'owner', now })
+      .find((value) => value.agentId === null)!;
+    const stopped = governance.setCategorizationControls({ spaceId: fixture.space.id, agentId: null, expectedVersion: current.version,
+      policy: { ...current.policy, stopped: true }, now, auth: auth('owner') });
+    const final = { ...input, acquisitionAuditId: acquired.auditRecord!.id };
+    expect(() => store.validateAcquiredProposalExecution(final)).toThrow(/stopped/i);
+    expect(testDatabase().prepare('SELECT COUNT(*) AS n FROM categorization_dispatch_admissions').get()).toEqual({ n: 0 });
+    governance.setCategorizationControls({ spaceId: fixture.space.id, agentId: null, expectedVersion: stopped.version,
+      policy: current.policy, now, auth: auth('owner') });
+    expect(() => store.validateAcquiredProposalExecution(final)).not.toThrow();
+    expect(() => store.validateAcquiredProposalExecution(final)).toThrow(/already admitted/i);
+    expect(testDatabase().prepare('SELECT state FROM categorization_dispatch_admissions').all()).toEqual([{ state: 'uncertain' }]);
+    await store.completeIdempotencyRecord(input.idempotencyKey, 'lost acknowledgement', false);
+    expect(testDatabase().prepare('SELECT state FROM categorization_dispatch_admissions').all()).toEqual([{ state: 'uncertain' }]);
+  });
+
+  it.each(['invalid', 'foreign category', 'matching'] as const)('retains a durable %s category result without trusting later completion arguments', async (kind) => {
+    const fixture = await setup({ operationApprovers: { set_category: 1 } });
+    const { agent, proposal } = await createAgentOriginProposal(fixture.space.id, fixture.membershipIds.owner!);
+    await approve(proposal, 'approver-a');
+    const input = acquisitionInput(proposal, { actorId: agent.actorId, auth: agent.auth });
+    const acquired = await store.acquireProposalExecution(input);
+    store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId: acquired.auditRecord!.id });
+    expect(testDatabase().prepare('SELECT magnitude FROM categorization_dispatch_admissions').get()).toEqual({ magnitude: '12500' });
+    const valid = { verified: true, transactionId: proposal.payload.transactionId, newCategoryId: proposal.payload.categoryId };
+    const result = kind === 'invalid' ? { verified: false } : kind === 'foreign category' ? { ...valid, newCategoryId: 'foreign' } : valid;
+    await store.completeIdempotencyRecord(input.idempotencyKey, null, undefined, JSON.stringify(result));
+    expect(testDatabase().prepare('SELECT state FROM categorization_dispatch_admissions').get()).toEqual({ state: kind === 'matching' ? 'verified' : 'uncertain' });
+    await store.completeIdempotencyRecord(input.idempotencyKey, null, undefined, JSON.stringify(valid));
+    expect(testDatabase().prepare('SELECT state FROM categorization_dispatch_admissions').get()).toEqual({ state: kind === 'matching' ? 'verified' : 'uncertain' });
+  });
 
   it.each(['origin delegation', 'executor delegation', 'executor credential'])(
     'rechecks persisted agent %s at the final acquired boundary',

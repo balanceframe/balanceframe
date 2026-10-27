@@ -236,6 +236,8 @@ beforeEach(async () => {
     registerCredential: (await import('../../server/api/spaces/[id]/credentials.post')).default as Handler,
     revokeCredential: (await import('../../server/api/spaces/[id]/credentials/[credentialId]/revoke.post')).default as Handler,
     audit: (await import('../../server/api/spaces/[id]/audit.get')).default as Handler,
+    categorizationControls: (await import('../../server/api/spaces/[id]/categorization-controls.get')).default as Handler,
+    setCategorizationControls: (await import('../../server/api/spaces/[id]/categorization-controls.put')).default as Handler,
   };
 });
 
@@ -245,6 +247,48 @@ afterEach(() => {
 });
 
 describe('space governance HTTP controls', () => {
+  it('rejects malformed categorization caps as caller input without writing a policy', async () => {
+    const event = request({ params: { id: spaceId }, body: { agentId: null, expectedVersion: null,
+      policy: { enabled: true, stopped: false, cooldownSeconds: 0,
+        caps: [{ window: 'day', maxOperations: 1, maxMagnitude: [{ currency: 'USD', minorUnits: 'not-an-integer' }] }] } } });
+    event.context.controlProof = true;
+    expectDenied(await routes.setCategorizationControls(event));
+    expect(event.statusCode).toBe(400);
+    expect(store.governance.listCategorizationControls({ spaceId, actorId: 'owner', now })).toEqual([]);
+  });
+
+  it('keeps categorization controls human-controlled, selected-space-bound and free of dispatch disclosures', async () => {
+    const body = { agentId: null, expectedVersion: null, policy: { enabled: true, stopped: false, cooldownSeconds: 0,
+      caps: [{ window: 'day', maxOperations: 2, maxMagnitude: [{ currency: 'USD', minorUnits: '100' }] }] } };
+    const denied = request({ params: { id: spaceId }, body });
+    denied.context.controlProof = false;
+    expectDenied(await routes.setCategorizationControls(denied));
+    expect(denied.statusCode).toBe(403);
+    const write = request({ params: { id: spaceId }, body }); write.context.controlProof = true;
+    const saved = resultOf(await routes.setCategorizationControls(write));
+    expect(saved.policy).toMatchObject({ agentId: null, policy: body.policy });
+    expect(JSON.stringify(saved)).not.toContain('private-budget-id');
+    expect(store.governance.getPolicy({ spaceId })?.minimumApprovers).toBe(1);
+    const read = request({ params: { id: spaceId } });
+    const policies = records(resultOf(await routes.categorizationControls(read)).policies);
+    expect(policies).toHaveLength(1);
+    expect(JSON.stringify(policies)).not.toContain('admittedAt');
+    expect(read.responseHeaders?.['cache-control']).toBe('private, no-store');
+    const foreign = request({ params: { id: 'other-space' }, body }); foreign.context.controlProof = true;
+    expectDenied(await routes.setCategorizationControls(foreign)); expect(foreign.statusCode).toBe(403);
+    const conflict = request({ params: { id: spaceId }, body }); conflict.context.controlProof = true;
+    expectDenied(await routes.setCategorizationControls(conflict)); expect(conflict.statusCode).toBe(409);
+  });
+  it('rejects malformed and caller-supplied accounting without writing a policy version', async () => {
+    for (const policy of [undefined, { enabled: true, stopped: false, cooldownSeconds: 0, caps: [] },
+      { enabled: false, stopped: true, cooldownSeconds: 0, caps: [], used: 0 }]) {
+      const event = request({ params: { id: spaceId }, body: { agentId: null, expectedVersion: null, policy } });
+      event.context.controlProof = true; expectDenied(await routes.setCategorizationControls(event));
+      expect(event.statusCode).toBe(400);
+    }
+    expect(store.governance.listCategorizationControls({ spaceId, actorId: 'owner', now })).toEqual([]);
+  });
+
   it('lists only a canonical human’s current spaces and withholds bound-budget metadata', async () => {
     const listEvent = request({ selected: null });
     const listResponse = await routes.list(listEvent);

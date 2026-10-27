@@ -23,6 +23,12 @@ function ok(result: unknown) {
   return { status: 'ok', result, error: null };
 }
 
+function boundCategorizationFixture() {
+  const previous = api.getMockImplementation()!;
+  api.mockImplementation((url, options) => url.endsWith('/connection')
+    ? Promise.resolve(ok({ budgetBound: true })) : previous(url, options));
+}
+
 function mountPage() {
   const page = mount(SpacesPage, { global: { stubs } });
   pages.push(page);
@@ -88,6 +94,11 @@ beforeEach(() => {
     if (url.endsWith('/grants')) return ok({ grants: [] });
     if (url.endsWith('/agents')) return ok({ agents: [] });
     if (url.endsWith('/delegations')) return ok({ delegations: [] });
+    if (url.endsWith('/categorization-controls') && options?.method === 'PUT') return ok({ policy: {
+      spaceId: 'space-selected', budgetId: 'budget', agentId: options.body?.agentId, version: 'controls-v1',
+      actorId: 'owner', createdAt: '2098-01-01T00:00:00.000Z', policy: options.body?.policy,
+    } });
+    if (url.endsWith('/categorization-controls')) return ok({ policies: [] });
     if (url.endsWith('/credentials')) return ok({ credentials: [] });
     if (url.endsWith('/audit')) return ok({ records: [], total: 0, limit: 50, offset: 0 });
     if (url.endsWith('/connection')) return ok({ budgetBound: false });
@@ -105,6 +116,62 @@ afterEach(() => {
 });
 
 describe('space governance page', () => {
+  it('keeps categorization controls disabled and stopped until an explicit reauthenticated save', async () => {
+    boundCategorizationFixture();
+    const page = mountPage(); await flushPromises();
+    expect(page.text()).toContain('Categorization automation limits');
+    expect(page.get<HTMLInputElement>('[aria-label="Enable delegated categorization"]').element.checked).toBe(false);
+    expect(page.get<HTMLInputElement>('[aria-label="Stop delegated categorization"]').element.checked).toBe(true);
+    await page.get('form[data-testid="categorization-controls"]').trigger('submit'); await flushPromises();
+    expect(api.mock.calls.some(([url, options]) => url.endsWith('/categorization-controls') && options?.method === 'PUT')).toBe(false);
+    expect(page.text()).toContain('Reauthenticate');
+  });
+  it('sends exact calendar/currency caps without changing human approval policy', async () => {
+    boundCategorizationFixture();
+    const page = mountPage(); await flushPromises();
+    await page.get('#governance-password').setValue('one-time-password');
+    await page.get('button[aria-label="Reauthenticate for space changes"]').trigger('click'); await flushPromises();
+    const caps = [{ window: 'day', maxOperations: 2, maxMagnitude: [{ currency: 'USD', minorUnits: '100' }] }];
+    await page.get('[aria-label="Categorization UTC caps"]').setValue(JSON.stringify(caps));
+    await page.get('[aria-label="Enable delegated categorization"]').setValue(true);
+    await page.get('[aria-label="Stop delegated categorization"]').setValue(false);
+    await page.get('form[data-testid="categorization-controls"]').trigger('submit'); await flushPromises();
+    const request = api.mock.calls.find(([url, options]) => url.endsWith('/categorization-controls') && options?.method === 'PUT');
+    expect(request?.[1]?.body).toEqual({ agentId: null, expectedVersion: null,
+      policy: { enabled: true, stopped: false, cooldownSeconds: 0, caps } });
+    expect(currentPolicy.minimumApprovers).toBe(1);
+    expect(page.text()).toContain('Independent human approvals remain required');
+  });
+  it('refuses malformed categorization caps before making a control write', async () => {
+    boundCategorizationFixture();
+    const page = mountPage(); await flushPromises();
+    await page.get('[aria-label="Categorization UTC caps"]').setValue('{broken');
+    await page.get('form[data-testid="categorization-controls"]').trigger('submit'); await flushPromises();
+    expect(api.mock.calls.some(([url, options]) => url.endsWith('/categorization-controls') && options?.method === 'PUT')).toBe(false);
+    expect(page.text()).toContain('Categorization caps');
+  });
+
+  it('lets a scoped delegation manager stop/configure limits without connection or agent management', async () => {
+    const previous = api.getMockImplementation()!;
+    api.mockImplementation((url, options) => {
+      if (url.endsWith('/connection') || url.endsWith('/agents')) return Promise.resolve({ status: 'error', result: null,
+        error: { code: 'FORBIDDEN', message: 'Not authorized', retryable: false } });
+      if (url.endsWith('/delegations')) return Promise.resolve(ok({ delegations: [{ id: 'delegation', agentId: 'scoped-agent',
+        issuerMembershipId: 'membership-owner', version: '1', rights: [], validFrom: '2098-01-01T00:00:00.000Z', validUntil: null, revokedAt: null }] }));
+      return previous(url, options);
+    });
+    const page = mountPage(); await flushPromises();
+    expect(page.find('form[data-testid="categorization-controls"]').exists()).toBe(true);
+    expect(page.find('option[value="scoped-agent"]').exists()).toBe(true);
+    await page.get('[aria-label="Categorization control scope"]').setValue('scoped-agent');
+    await page.get('#governance-password').setValue('one-time-password');
+    await page.get('button[aria-label="Reauthenticate for space changes"]').trigger('click'); await flushPromises();
+    await page.get('form[data-testid="categorization-controls"]').trigger('submit'); await flushPromises();
+    expect(api.mock.calls.find(([url, options]) => url.endsWith('/categorization-controls') && options?.method === 'PUT')?.[1]?.body)
+      .toEqual({ agentId: 'scoped-agent', expectedVersion: null, policy: { enabled: false, stopped: true, cooldownSeconds: 0, caps: [] } });
+    expect(api.mock.calls.some(([url, options]) => /\/(?:connection|agents|grants)$/.test(url) && options?.method !== undefined)).toBe(false);
+  });
+
   it('requires a deliberate budget choice before binding a discovered Actual budget', async () => {
     const page = mountPage();
     await flushPromises();
