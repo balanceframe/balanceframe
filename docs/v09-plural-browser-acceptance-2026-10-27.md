@@ -34,7 +34,11 @@ application services with the original encryption key and connection managers.
 It compares the entire durable proposal and both approval records, the original
 payload/hash/preconditions, then reconciles read-only before and after expiry.
 A repeated reconciliation retains exact parent/child data, IDs, count and cash;
-the SDK update counter stays exactly two. No Execute call follows uncertainty.
+the SDK update counter stays exactly two. Recovery uses read-only reconciliation.
+The existing server Execute-idempotency controls retain the held/verified result
+without additional SDK writes; the browser journey below never retries Execute.
+Both pre-reopen approval records must be nonnull and retain their original IDs,
+independent actors and payload hashes before post-reopen equality is checked.
 
 Fresh isolated fixtures passed **one test each, no skips**, against running
 `@actual-app/sync-server` **26.7.0** and **26.10.0**, checked through `/info` and
@@ -45,6 +49,10 @@ final policies require two. Local sanitized receipts:
 - Red control: `/tmp/balanceframe-plural-reopen-20261027-fljo8t9g/`.
 - Passing profiles: `/tmp/balanceframe-plural-reopen-20261027-yu5pwzge/`, each
   profile's `test.log`, `server-info.json`, and `cleanup.json`.
+- Final review follow-up, retaining both server Execute-idempotency controls and
+  requiring nonnull approval identity/hash matches: both profiles passed again
+  in `/tmp/balanceframe-plural-reopen-20261027-0f5xiejc/`, one test per version,
+  with the same complete cleanup receipts.
 
 Fixture-owned process groups stopped, ports closed, private data/client roots
 and generated `.env.test` files were removed. A first cleanup port probe raced

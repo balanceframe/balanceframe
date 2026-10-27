@@ -548,11 +548,17 @@ describe('12 — real SDK governed plural evidence allocation', () => {
         );
       }
       expect((await consequential.reconcile(actor, stored.id)).phase).toBe('review_required');
+      expect((await consequential.execute(actor, stored.id)).phase).toBe('review_required');
       expect(writes.filter((write) => parentIds.includes(write.id))).toHaveLength(2);
       const childIds = after.raw.map((raw) => raw.children.map((c) => c.id));
       const persisted = await workflow.getProposal(stored.id);
       const persistedApprovals = await Promise.all(
         approvals.map((approval) => workflow.getApproval(approval.id)),
+      );
+      expect(persistedApprovals).toEqual(
+        approvals.map(({ id, actorId, payloadHash }) =>
+          expect.objectContaining({ id, actorId, payloadHash }),
+        ),
       );
       workflow.close();
       store = new SqliteWorkflowStore(join(directory, 'workflow.sqlite'));
@@ -585,6 +591,7 @@ describe('12 — real SDK governed plural evidence allocation', () => {
       expect((await consequential.reconcile(actor, stored.id)).phase).toBe('verified');
       expect(writes.filter((w) => parentIds.includes(w.id))).toHaveLength(2);
       expect((await consequential.reconcile(actor, stored.id)).phase).toBe('verified');
+      expect((await consequential.execute(actor, stored.id)).phase).toBe('verified');
       const rechecked = await readRaw();
       expect(rechecked.raw.map((raw) => raw.children.map((c) => c.id))).toEqual(childIds);
       expect(rechecked.raw.map(({ parent, children }) => ({ parent, children }))).toEqual(
