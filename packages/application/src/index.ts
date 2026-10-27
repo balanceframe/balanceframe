@@ -94,3 +94,4 @@ export {
 export * from './evidence-receipt-version.js';
 
 export * from './receipt-item-inference.js';
+export * from './decision-card-explanation.js';

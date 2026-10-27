@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createEvent } from 'h3';
 import type * as H3 from 'h3';
 import { IncomingMessage, ServerResponse } from 'node:http';
@@ -44,6 +44,10 @@ vi.mock('@balanceframe/application', async () => {
   };
 });
 
+vi.mock('../../server/utils/bounded-json', () => ({
+  readBoundedJsonBody: async (event: H3.H3Event) => event.context.explanationBody,
+}));
+import explainHandler from '../../server/api/purchase/explain.post';
 import handler from '../../server/api/purchase/evaluate.get';
 
 const OWNER = 'purchase-route-owner';
@@ -63,6 +67,7 @@ let spaceId = '';
 let budgetId = '';
 let membershipId = '';
 let snapshot: FinancialSnapshot;
+let connectionSource = 'fixture-connection';
 
 function request(url: string) {
   const req = new IncomingMessage(new Socket());
@@ -116,6 +121,9 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv('BALANCEFRAME_CONVERSATION_POLICY', '');
+  vi.stubEnv('BALANCEFRAME_CONVERSATION_PROVIDER', '');
+  vi.stubEnv('BALANCEFRAME_CONVERSATION_API_KEY', '');
   budgetId = `purchase-route-budget-${++sequence}`;
   const baseSpace = store.governance.createSpace({
     actorId: OWNER,
@@ -150,10 +158,11 @@ beforeEach(() => {
     loadConfig: mocks.loadConfig,
     withConnection: mocks.withConnection,
   };
+  connectionSource = 'fixture-connection';
   mocks.loadConfig.mockResolvedValue({ budgetId });
   mocks.withConnection.mockImplementation(async (operation) =>
     operation({
-      config: { budgetId },
+      config: { budgetId, serverUrl: connectionSource },
       budget: { id: budgetId },
       connector: {},
       synchronization: { financialSnapshot: snapshot },
@@ -163,6 +172,8 @@ beforeEach(() => {
     throw new Error('Private savings source insufficient: account-private, 900000 USD');
   });
 });
+
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 afterAll(() => {
   store.close();
@@ -230,5 +241,144 @@ describe('GET /api/purchase/evaluate current Native trust boundary', () => {
     expect(mocks.withConnection).toHaveBeenCalledOnce();
     expect(mocks.evaluateDecisionCard).toHaveBeenCalledOnce();
     expect(serialized).not.toMatch(/Private savings|account-private|900000/);
+  });
+});
+
+
+describe('POST /api/purchase/explain selected-space boundary', () => {
+  const body = {
+    kind: 'purchase',
+    categoryId: 'food',
+    amount: { minorUnits: '2000', currency: 'USD' },
+  };
+  function explanationEvent(value: unknown = body) {
+    const event = request('/api/purchase/explain');
+    event.node.req.method = 'POST';
+    event.node.req.headers.origin = 'http://localhost:3000';
+    event.context.explanationBody = value;
+    return event;
+  }
+  it('requires the exact existing evaluation capability before reading the source', async () => {
+    const response = await explainHandler(explanationEvent());
+    expect(response.status).toBe('error');
+    expect(mocks.loadConfig).not.toHaveBeenCalled();
+  });
+  it('returns the ordinary insufficient-data Card with conversation disabled', async () => {
+    for (const [capability, kind, id] of [
+      ['affordability:evaluate', 'budget', budgetId],
+      ['conclusion', 'budget', budgetId],
+      ['existence', 'category', 'food'],
+      ['conclusion', 'category', 'food'],
+    ] as const)
+      grant(capability, kind, id);
+    const response = await explainHandler(explanationEvent());
+    expect(response).toMatchObject({
+      status: 'ok',
+      authorization: { actorId: ACTOR, capability: 'affordability:evaluate' },
+      result: {
+        card: { outcome: 'insufficient_data', blockers: ['policy_unavailable'] },
+        explanation: { status: 'manual', code: 'disabled' },
+      },
+    });
+    expect(JSON.stringify(response)).not.toContain('forged-legacy-actor');
+  });
+  it.each([
+    { card: {} },
+    { actorId: OWNER },
+    { endpoint: 'https://attacker.example' },
+    { policy: { mode: 'external_allowed' } },
+  ])('rejects client authority/configuration: %j', async (extra) => {
+    grant('affordability:evaluate', 'budget', budgetId);
+    const response = await explainHandler(explanationEvent({ ...body, ...extra }));
+    expect(response).toMatchObject({ status: 'error', error: { code: 'INVALID_LIQUIDITY_INPUT' } });
+    expect(mocks.withConnection).not.toHaveBeenCalled();
+  });
+  it.each(['valid', 'source', 'connection', 'credential', 'policy'] as const)(
+    'runs the configured transport with normal public scope and rejects late %s changes',
+    async (mode) => {
+      for (const [capability, kind, id] of [
+        ['affordability:evaluate', 'budget', budgetId],
+        ['conclusion', 'budget', budgetId],
+        ['existence', 'category', 'food'],
+        ['conclusion', 'category', 'food'],
+      ] as const)
+        grant(capability, kind, id);
+      const policy = {
+        mode: 'external_allowed',
+        revision: 'policy-1',
+        timeoutMs: 1000,
+        allowedProviders: [
+          {
+            id: 'conversation',
+            model: 'approved-model',
+            endpoint: 'https://synthetic.example/chat',
+            promptVersion: 'decision-card-explanation-v1',
+          },
+        ],
+      };
+      vi.stubEnv('BALANCEFRAME_CONVERSATION_POLICY', JSON.stringify(policy));
+      vi.stubEnv(
+        'BALANCEFRAME_CONVERSATION_PROVIDER',
+        JSON.stringify({
+          id: 'conversation',
+          model: 'approved-model',
+          endpoint: 'https://synthetic.example/chat',
+          locality: 'external',
+        }),
+      );
+      vi.stubEnv('BALANCEFRAME_CONVERSATION_API_KEY', 'synthetic-only');
+      let valid = true;
+      const event = explanationEvent();
+      event.context.auth!.isCredentialValid = () => valid;
+      const fetchFn = vi.fn<typeof fetch>(async () => {
+        if (mode === 'source')
+          snapshot.legacySnapshot.accounts[0]!.name = 'changed synthetic source';
+        if (mode === 'connection') connectionSource = 'changed-fixture-connection';
+      if (mode === 'credential') valid = false;
+        if (mode === 'policy')
+          process.env.BALANCEFRAME_CONVERSATION_POLICY = JSON.stringify({
+            ...policy,
+            revision: 'policy-2',
+          });
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: JSON.stringify({ status: 'explained', factIds: ['f0'] }) },
+              },
+            ],
+          }),
+        );
+      });
+      vi.stubGlobal('fetch', fetchFn);
+      const response = await explainHandler(event);
+      expect(fetchFn).toHaveBeenCalledOnce();
+      if (mode === 'valid')
+        expect(response).toMatchObject({
+          status: 'ok',
+          result: {
+            card: { outcome: 'insufficient_data' },
+            explanation: {
+              status: 'explained',
+              facts: [{ kind: 'outcome', code: 'insufficient_data' }],
+            },
+          },
+        });
+      else expect(response).toMatchObject({ status: 'error', result: null });
+      const sent = String(fetchFn.mock.calls[0]![1]!.body);
+      expect(sent).not.toContain(budgetId);
+      expect(sent).not.toContain(ACTOR);
+      expect(sent).not.toContain('2000');
+      expect(JSON.stringify(response)).not.toContain('synthetic-only');
+    },
+  );
+  it('denies foreign-origin dispatch without consuming the source', async () => {
+    grant('affordability:evaluate', 'budget', budgetId);
+    const event = explanationEvent();
+    event.node.req.headers.origin = 'https://attacker.example';
+    const response = await explainHandler(event);
+    expect(response.status).toBe('error');
+    expect(mocks.withConnection).not.toHaveBeenCalled();
   });
 });
