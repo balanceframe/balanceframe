@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteWorkflowStore } from '../src/store.js';
+import { categorizationControlPolicySchema } from '../src/categorization-controls.js';
 
 const now = '2098-01-01T12:00:00.000Z';
 const auth = (at = now) => ({ method: 'human-session' as const, actorId: 'owner', sessionId: 'owner-session', reauthenticatedAt: at });
@@ -100,6 +101,14 @@ describe('durable categorization delegation controls', () => {
     expect(() => dispatch('proposal-one', { payloadHash: 'different' })).toThrow(/identity/i);
     verify(); expect(() => dispatch()).toThrow(/already admitted/i);
   });
+  it.each(['x', '1.5', '1e3', 'NaN', '+1', '-1', '01', '', '9223372036854775808'])(
+    'returns structured policy rejection without throwing for malformed cap %j', (minorUnits) => {
+      const input = { enabled: true, stopped: false, cooldownSeconds: 0, caps: [cap(1, minorUnits)] };
+      expect(() => categorizationControlPolicySchema.safeParse(input)).not.toThrow();
+      expect(categorizationControlPolicySchema.safeParse(input).success).toBe(false);
+      expect(store.governance.listCategorizationControls({ spaceId, actorId: 'owner', now })).toEqual([]);
+    },
+  );
   it.each(['9223372036854775808', '1.5', '01', 'NaN'])('rejects noncanonical or overflowing input %s', (minorUnits) => {
     enable(); expect(() => dispatch('one', { amount: { minorUnits, currency: 'USD' } })).toThrow(/amount/i);
   });
