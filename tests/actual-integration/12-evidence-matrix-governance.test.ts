@@ -34,7 +34,7 @@ const load = (name: string): unknown =>
 const money = (minorUnits: string) => ({ minorUnits, currency: 'USD' });
 
 describe('12 — real SDK governed plural evidence allocation', () => {
-  it('independently approves one exact matrix, amends the same imported parents, and recovers lost acknowledgement by readonly proof', async () => {
+  it('retains two independent approvals and exact matrix binding across durable reopen, then recovers lost acknowledgement by readonly proof', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'balanceframe-matrix-governance-sdk-'));
     mkdirSync(join(directory, 'seed'));
     mkdirSync(join(directory, 'cleanup'));
@@ -102,7 +102,7 @@ describe('12 — real SDK governed plural evidence allocation', () => {
         { dataDir: join(directory, 'seed') },
       );
       store = new SqliteWorkflowStore(join(directory, 'workflow.sqlite'));
-      const workflow = store;
+      let workflow = store;
       const auth = (actorId: string) => ({
         method: 'human-session' as const,
         actorId,
@@ -133,7 +133,7 @@ describe('12 — real SDK governed plural evidence allocation', () => {
       workflow.governance.setPolicy({
         spaceId: space.id,
         expectedVersion: policy.version,
-        policy: { minimumApprovers: 1, assistanceMaximum: 'execute_approved_actions' },
+        policy: { minimumApprovers: 2, assistanceMaximum: 'execute_approved_actions' },
         now: clockNow,
         auth: ownerAuth,
       });
@@ -254,20 +254,21 @@ describe('12 — real SDK governed plural evidence allocation', () => {
         for (const right of ['ledger_projection:propose', 'ledger_projection:execute', 'source'])
           grant(actor, 'ledger_effect', id, right);
       for (const right of ['ingest', 'resolve']) grant(actor, 'budget', seeded.budgetId, right);
-      const evidence = await createTransactionEvidenceService({
+      const rawEncryptionKey = randomBytes(32);
+      let evidence = await createTransactionEvidenceService({
         store: workflow,
         connectionManager: manager,
-        rawEncryptionKey: randomBytes(32),
+        rawEncryptionKey,
         clock,
       });
-      const liquidity = await createLiquidityService({
-          store: workflow,
-          connectionManager: manager,
-          mutationConnectionManager: mutations,
-          transactionEvidence: evidence,
-          clock,
-        }),
-        expiresAt = new Date(Date.parse(clockNow) + 86400000).toISOString();
+      let liquidity = await createLiquidityService({
+        store: workflow,
+        connectionManager: manager,
+        mutationConnectionManager: mutations,
+        transactionEvidence: evidence,
+        clock,
+      });
+      const expiresAt = new Date(Date.parse(clockNow) + 86400000).toISOString();
       await liquidity.savePolicy(actor, {
         expectedVersion: null,
         expiresAt,
@@ -283,7 +284,7 @@ describe('12 — real SDK governed plural evidence allocation', () => {
           automationAllowed: false,
         })),
         transferRoutes: [],
-        approvalPolicy: { minimumApprovers: 1 },
+        approvalPolicy: { minimumApprovers: 2 },
       });
       actor = {
         ...actor,
@@ -424,7 +425,7 @@ describe('12 — real SDK governed plural evidence allocation', () => {
       if (action.kind !== 'composite') throw new Error('Native matrix composite required');
       expect(action.actions).toHaveLength(2);
       expect(action.actions.every((a) => a.kind === 'evidence_amendment')).toBe(true);
-      const consequential = await createConsequentialActionService({
+      let consequential = await createConsequentialActionService({
         liquidity,
         store: workflow,
         clock,
@@ -433,29 +434,6 @@ describe('12 — real SDK governed plural evidence allocation', () => {
       expect(writes).toEqual([]);
       await expect(consequential.execute(actor, proposed.id)).rejects.toThrow();
       expect(writes).toEqual([]);
-      await workflow.upsertActorMembership(
-        'matrix-approver',
-        'active',
-        ['observe'],
-        `budget:${actor.budgetId}`,
-      );
-      const member = workflow.governance.addMembership({
-          spaceId: space.id,
-          actorId: 'matrix-approver',
-          validFrom: clockNow,
-          now: clockNow,
-          auth: ownerAuth,
-        }),
-        approver: LiquidityActor & {
-          spaceId: string;
-          membershipId: string;
-          auth: ReturnType<typeof auth>;
-        } = {
-          ...actor,
-          actorId: 'matrix-approver',
-          membershipId: member.id,
-          auth: auth('matrix-approver'),
-        };
       const stored = await workflow.getProposal(proposed.id);
       if (!stored || stored.operation !== 'consequential_action')
         throw new Error('Stored governed action required');
@@ -481,19 +459,45 @@ describe('12 — real SDK governed plural evidence allocation', () => {
         JSON.parse(stored.preconditions),
         actor.budgetId,
       )!;
-      for (const requirement of [
-        ...reads.required,
-        ...consequentialActionPhaseRequirements(stored.payload.plan, actor.budgetId, 'approve'),
-      ])
-        grant(approver, requirement.resourceKind, requirement.resourceId, requirement.capability);
-      await workflow.createApproval({
-        proposalId: stored.id,
-        payloadHash: stored.payloadHash,
-        actorId: approver.actorId,
-        expiresAt: stored.expiresAt,
-        auth: approver.auth!,
-        now: clockNow,
-      });
+      expect(proposed.requiredApprovers).toBe(2);
+      const approvals = [];
+      for (const actorId of ['matrix-approver-one', 'matrix-approver-two']) {
+        await workflow.upsertActorMembership(
+          actorId,
+          'active',
+          ['observe'],
+          `budget:${actor.budgetId}`,
+        );
+        const member = workflow.governance.addMembership({
+          spaceId: space.id,
+          actorId,
+          validFrom: clockNow,
+          now: clockNow,
+          auth: ownerAuth,
+        });
+        const approver = { ...actor, actorId, membershipId: member.id, auth: auth(actorId) };
+        for (const requirement of [
+          ...reads.required,
+          ...consequentialActionPhaseRequirements(stored.payload.plan, actor.budgetId, 'approve'),
+        ])
+          grant(approver, requirement.resourceKind, requirement.resourceId, requirement.capability);
+        approvals.push(
+          await workflow.createApproval({
+            proposalId: stored.id,
+            payloadHash: stored.payloadHash,
+            actorId,
+            expiresAt: stored.expiresAt,
+            auth: approver.auth,
+            now: clockNow,
+          }),
+        );
+        if (approvals.length === 1) {
+          await expect(consequential.execute(actor, stored.id)).rejects.toThrow();
+          expect(writes).toEqual([]);
+        }
+      }
+      expect(new Set(approvals.map((approval) => approval.actorId)).size).toBe(2);
+      expect(approvals.every((approval) => approval.actorId !== actor.actorId)).toBe(true);
       expect(writes).toEqual([]);
       expect((await consequential.execute(actor, stored.id)).phase).toBe('review_required');
       expect(writes.filter((w) => parentIds.includes(w.id))).toHaveLength(2);
@@ -547,12 +551,54 @@ describe('12 — real SDK governed plural evidence allocation', () => {
       expect((await consequential.execute(actor, stored.id)).phase).toBe('review_required');
       expect(writes.filter((write) => parentIds.includes(write.id))).toHaveLength(2);
       const childIds = after.raw.map((raw) => raw.children.map((c) => c.id));
+      const persisted = await workflow.getProposal(stored.id);
+      const persistedApprovals = await Promise.all(
+        approvals.map((approval) => workflow.getApproval(approval.id)),
+      );
+      expect(persistedApprovals).toEqual(
+        approvals.map(({ id, actorId, payloadHash }) =>
+          expect.objectContaining({ id, actorId, payloadHash }),
+        ),
+      );
+      workflow.close();
+      store = new SqliteWorkflowStore(join(directory, 'workflow.sqlite'));
+      workflow = store;
+      evidence = await createTransactionEvidenceService({
+        store: workflow,
+        connectionManager: manager,
+        rawEncryptionKey,
+        clock,
+      });
+      liquidity = await createLiquidityService({
+        store: workflow,
+        connectionManager: manager,
+        mutationConnectionManager: mutations,
+        transactionEvidence: evidence,
+        clock,
+      });
+      consequential = await createConsequentialActionService({ liquidity, store: workflow, clock });
+      expect(await workflow.getProposal(stored.id)).toEqual(persisted);
+      expect(
+        await Promise.all(approvals.map((approval) => workflow.getApproval(approval.id))),
+      ).toEqual(persistedApprovals);
+      expect((await workflow.getProposal(stored.id))?.payload).toEqual(stored.payload);
+      expect((await workflow.getProposal(stored.id))?.payloadHash).toBe(stored.payloadHash);
+      expect((await workflow.getProposal(stored.id))?.preconditions).toBe(stored.preconditions);
+      expect((await consequential.reconcile(actor, stored.id)).phase).toBe('review_required');
+      expect(writes.filter((write) => parentIds.includes(write.id))).toHaveLength(2);
       clockNow = new Date(Date.parse(stored.expiresAt) + 1000).toISOString();
       recoveryClock = clockNow;
       expect((await consequential.reconcile(actor, stored.id)).phase).toBe('verified');
       expect(writes.filter((w) => parentIds.includes(w.id))).toHaveLength(2);
+      expect((await consequential.reconcile(actor, stored.id)).phase).toBe('verified');
       expect((await consequential.execute(actor, stored.id)).phase).toBe('verified');
-      expect((await readRaw()).raw.map((raw) => raw.children.map((c) => c.id))).toEqual(childIds);
+      const rechecked = await readRaw();
+      expect(rechecked.raw.map((raw) => raw.children.map((c) => c.id))).toEqual(childIds);
+      expect(rechecked.raw.map(({ parent, children }) => ({ parent, children }))).toEqual(
+        after.raw.map(({ parent, children }) => ({ parent, children })),
+      );
+      expect(rechecked.count).toBe(after.count);
+      expect(rechecked.balance).toEqual(after.balance);
       expect(writes.filter((w) => parentIds.includes(w.id))).toHaveLength(2);
     } finally {
       try {
