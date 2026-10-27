@@ -18,6 +18,13 @@ a Card, endpoint, provider, identity or policy. Conversation is disabled by
 default; see [the server-owned boundary and operator configuration](../../docs/adr/0008-read-only-decision-card-explanation.md).
 No approval or financial mutation is implied by an explanation.
 
+The optional explanation command adds no explicit financial write operation.
+Its inherited Actual observer download/shutdown lifecycle is not yet qualified
+as producing zero financial writes; see [ADR 0008](../../docs/adr/0008-read-only-decision-card-explanation.md).
+The feature remains disabled by default and blocked from deployment pending that
+source-boundary decision. Publishing a draft does not authorize connecting a
+provider or sending financial data.
+
 Run `balanceframe --version` to print the CLI package version. This needs no
 configured server, selected space, or credentials.
 

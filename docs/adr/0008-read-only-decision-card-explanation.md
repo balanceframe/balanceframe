@@ -45,9 +45,25 @@ Authorization, selected space, membership, credential lifetime, conversation
 configuration and the source/state binding are checked before dispatch and
 after asynchronous work. The binding remains private. A changed context
 requires refreshing the Card; a late answer is discarded. Client results also
-clear on intent, session/user change and unmount. Explanation does not approve,
-execute, mutate Actual, create a claim or complete a Spend Session. Ordinary
-evaluation's existing workflow reconciliation behavior is retained.
+clear on intent, session/user change and unmount. Explanation adds no explicit
+financial write, approval, execution, claim or Spend Session completion operation.
+Ordinary evaluation's existing workflow reconciliation behavior is retained.
+
+**Source qualification remains open.** The ordinary observer composition reused
+by Purchase Check is read-only at its adapter API boundary, but the installed
+patched Actual SDK's `downloadBudget` loads/migrates/replays the local budget and
+can upload changes through `possiblyUpload` and `syncBudget`/`fullSync`.
+SDK `shutdown` also attempts synchronization. A fresh observe cache and rejected
+explicit mutation methods therefore do not establish a zero-financial-write
+lifecycle. This is inherited source behavior, not an observed financial change
+from explanation tests. The explanation operation does not resolve it.
+
+Keep this draft blocked from acceptance or deployment until a separately approved
+source-boundary design qualifies acquisition, refresh, ownership changes and
+cleanup. Do not bypass synchronization, access private SDK message handlers or
+weaken cache/filesystem protections under this feature's authorization. The
+provider remains disabled; no credentials or provider connection are authorized
+by publishing the code for review.
 
 Source binding uses an explanation-specific representation. It omits only
 generated Actual read-capture identifiers/hashes/clocks, including ledger-source
@@ -134,3 +150,12 @@ changed. The unchanged-source native addon was reused with SHA-256
 these are not fresh Rust or whole-workspace/native coverage gates. Compatibility
 with the separately approved dependency updates requires the coordinated stack's
 own validation.
+
+
+After integrating the approved security closure, the shared source lifecycle was
+independently inspected in patched Actual SDK 26.10.0, bundle SHA-256
+`1191509c5c629d99bdf6d4d96637c66abb3fe6e11da2428b4cec30d154ea58c7`.
+Its public download and shutdown contracts expose no guaranteed read-only mode.
+The application/provider tests establish intent, authorization and output bounds;
+they do not establish end-to-end zero SDK uploads. This newly recorded limitation
+supersedes any broader interpretation of the earlier read-only wording.
