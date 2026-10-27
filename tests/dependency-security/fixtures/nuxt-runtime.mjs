@@ -5,6 +5,8 @@ import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
+// Nuxt wraps console and stream logging in CI; retain the original machine-output channel.
+const writeMachineOutput = process.stdout.write.bind(process.stdout);
 const root = process.argv[2];
 const { loadNuxt, build: buildNuxt } = await import(
   pathToFileURL(join(root, 'apps/web/node_modules/nuxt/dist/index.mjs')).href
@@ -74,17 +76,18 @@ try {
   const html = await response.text();
   const normal = await fetch(base + '/protected/secret', { redirect: 'manual' });
   const variant = await fetch(base + '/Protected/secret', { redirect: 'manual' });
-  console.log(
-    'SECURITY_PROBE_RESULT',
-    JSON.stringify({
-      rootStatus: response.status,
-      normalStatus: normal.status,
-      variantStatus: variant.status,
-      normalLocation: normal.headers.get('location'),
-      variantLocation: variant.headers.get('location'),
-      link: html.match(/<a[^>]*>Synthetic link<\/a>/)?.[0],
-      ordinary: html.match(/<a[^>]*>Ordinary link<\/a>/)?.[0],
-    }),
+  writeMachineOutput(
+    'SECURITY_PROBE_RESULT ' +
+      JSON.stringify({
+        rootStatus: response.status,
+        normalStatus: normal.status,
+        variantStatus: variant.status,
+        normalLocation: normal.headers.get('location'),
+        variantLocation: variant.headers.get('location'),
+        link: html.match(/<a[^>]*>Synthetic link<\/a>/)?.[0],
+        ordinary: html.match(/<a[^>]*>Ordinary link<\/a>/)?.[0],
+      }) +
+      '\n',
   );
 } finally {
   if (child && child.exitCode === null) {
