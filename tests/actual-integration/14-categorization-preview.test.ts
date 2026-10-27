@@ -91,11 +91,12 @@ describe('14 — synchronized categorization preview through the real SDK', () =
       const databasePath = join(directory, 'workflow.sqlite');
       store = new SqliteWorkflowStore(databasePath);
       const now = () => new Date().toISOString();
+      const reauthenticatedAt = now();
       const auth = (actorId: string) => ({
         method: 'human-session' as const,
         actorId,
         sessionId: `session:${actorId}`,
-        reauthenticatedAt: now(),
+        reauthenticatedAt,
       });
       await store.claimBootstrap({
         name: 'Synthetic Preview Owner',
