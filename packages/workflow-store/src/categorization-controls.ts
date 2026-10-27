@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 const id = z.string().min(1).max(256);
 const unsignedMinor = z.string().max(19).regex(/^(0|[1-9]\d*)$/)
-  .refine((value) => BigInt(value) <= 9_223_372_036_854_775_807n);
+  .pipe(z.string().refine((value) => BigInt(value) <= 9_223_372_036_854_775_807n));
 const currency = z.string().regex(/^[A-Z]{3}$/);
 const capSchema = z.object({
   window: z.enum(['day', 'week', 'month']),
