@@ -139,3 +139,58 @@ research-overlay validator separately fails because that renderer emits
 an explicit JSON `false`. A private diagnostic confirmed the exact read-only
 bind source and no created directory; a temporary `true` variant rendered an
 explicit JSON `true`. No research manifest or validator was changed here.
+
+### Container qualification recheck, 2026-10-27
+
+At source commit `6fe0c2d4075d841bdc45d9d12ecda2e7a24df265`, Docker Engine
+28.4.0, Buildx 0.31.0 and Compose 2.40.3 were available, but no existing OCR
+image was present. The unchanged optional Dockerfile SHA-256 was
+`a77a666d5a1ac4c64aee41c332c84cdc72f2705dfcf8a1e4482d512348b0fa89`.
+All approved engine, library, model and source checksums above remain unchanged.
+
+The pinned build was attempted with a private writable Docker client
+configuration because the environment's home directory is read-only:
+
+```sh
+ocr_docker_config=$(mktemp -d)
+DOCKER_CONFIG="$ocr_docker_config" docker build --progress=plain \
+  -t balanceframe-ocr-qualification:20261027 \
+  -f packages/receipt-ocr/Dockerfile .
+rm -rf -- "$ocr_docker_config"
+```
+
+The Node base image resolved to
+`sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205`.
+The runtime package layer reported `Temporary failure resolving
+'deb.debian.org'`, could not locate `libpng16-16` or `libjpeg62-turbo`, and
+exited 100. The parallel compiler-package layer was canceled. No OCR source
+compiled, no OCR image was produced and no container was started. The recheck
+used the default build network and changed no host permissions, dependency
+versions, network policy or runtime security controls.
+
+Supporting checks passed on Node 24.19.0 using the existing Vitest 4.1.11
+installation:
+
+- Syntax checks passed for all three sidecar modules.
+- Both OCR test files passed all 16 tests, including synthetic subprocess
+  timeout, abort, output bounds, private-file cleanup, pinned-version refusal,
+  source hash and HTTP error behavior. Coverage was 92.50% lines, 90.44%
+  statements, 96.51% branches and 90.90% functions.
+- The web tests `test/server/receipt-ocr.test.ts`,
+  `test/pages/receipt-photo-capture.test.ts` and
+  `test/pages/receipt-photo-client.test.ts` passed all 40 tests. They cover
+  unconfigured/offline/timed-out OCR fallback, source/version validation and
+  manual photo review with synthetic responses. Reproduce after normal workspace
+  dependency setup and Nuxt preparation with
+  `pnpm --filter @balanceframe/web exec vitest run test/server/receipt-ocr.test.ts test/pages/receipt-photo-capture.test.ts test/pages/receipt-photo-client.test.ts`.
+- `tests/deployment/compose-validate.sh` passed, including the research bind
+  policy checks that failed during the earlier verification. The OCR deployment
+  tests separately passed default-off and explicit-profile isolation assertions
+  without starting services.
+
+These checks establish deterministic boundary and component behavior only.
+Real container HTTP extraction, runtime versions, original-image hash,
+temporary-file cleanup and timeout behavior remain **unverified** until the
+unchanged image builds with ordinary container DNS. No live browser flow or
+recognition-quality claim is made by this recheck. All task-owned test processes
+completed; no qualification container or service remains running.
