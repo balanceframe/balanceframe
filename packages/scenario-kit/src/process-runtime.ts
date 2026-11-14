@@ -435,6 +435,7 @@ function expectScript(): string {
 set timeout 30
 log_user 0
 spawn actual-server --reset-password
+expect_before timeout { exit 1 }
 expect -re "Enter a password, then press enter:" {
   send -- "$env(ACTUAL_SECRET_KEY)"
   after 500

@@ -146,7 +146,7 @@ UI in a real browser.
    seeds a disposable Actual server from the canonical protocol fixture:
 
    ```bash
-   pnpm --filter @balanceframe/actual-integration setup
+   pnpm --filter @balanceframe/actual-integration run setup
    ```
 
    When the execution environment provides a process supervisor, use it for
