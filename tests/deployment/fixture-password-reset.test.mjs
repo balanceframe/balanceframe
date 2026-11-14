@@ -16,24 +16,35 @@ writeFileSync(
 const { writeFileSync } = require('node:fs');
 const stage = process.env.FAKE_RESET_STAGE;
 const mark = (value) => writeFileSync(process.env.FAKE_RESET_TRACE, value);
+const completes = ['complete', 'coalesced', 'character'].includes(stage);
 const keepAlive = setInterval(() => {}, 1000);
 mark('initial');
 if (stage !== 'initial') {
-  let input = '', lines = 0;
+  let input = '', lines = 0, held = null;
   process.stdin.setRawMode(true);
   process.stdin.on('data', (chunk) => {
-    input += chunk;
-    while (input.includes('\\r')) {
-      input = input.slice(input.indexOf('\\r') + 1);
-      lines += 1;
-      if (lines === 1) {
-        mark('confirmation');
-        if (stage !== 'confirmation') process.stdout.write('Enter the password again, then press enter: ');
-      } else {
-        mark(stage === 'complete' ? 'complete' : stage === 'exit' ? 'exit' : 'success');
-        if (stage !== 'success') process.stdout.write('Password set!\\n');
-        if (stage === 'complete') { clearInterval(keepAlive); process.exit(0); }
-      }
+    if (stage === 'coalesced' && chunk.length > 1 && chunk[0] !== 13) {
+      held = chunk;
+      mark('coalesced');
+      return;
+    }
+    if (held) { chunk = Buffer.concat([held, chunk]); held = null; }
+    if (chunk[0] !== 13) {
+      input += chunk;
+      if (stage === 'character') mark('character');
+      else process.stdout.write('*');
+      return;
+    }
+    if (input !== process.env.ACTUAL_SECRET_KEY) process.exit(2);
+    input = '';
+    lines += 1;
+    if (lines === 1) {
+      mark(stage === 'character' ? 'character' : 'confirmation');
+      if (stage !== 'confirmation') process.stdout.write('Enter the password again, then press enter: ');
+    } else {
+      mark(completes ? stage : stage === 'exit' ? 'exit' : 'success');
+      if (stage !== 'success') process.stdout.write('Password set!\\n');
+      if (completes) { clearInterval(keepAlive); process.exit(0); }
     }
   });
   process.stdout.write('Enter a password, then press enter: ');
@@ -59,8 +70,17 @@ const scripts = [
 
 for (const [name, source] of scripts) {
   assert.equal(typeof source, 'string', `${name} password-reset script must be found`);
-  for (const stage of ['initial', 'confirmation', 'success', 'exit', 'complete']) {
-    test(`${name} reset ${stage === 'complete' ? 'accepts acknowledged completion' : `fails closed at ${stage} timeout`}`, () => {
+  for (const stage of [
+    'initial',
+    'confirmation',
+    'success',
+    'exit',
+    'character',
+    'complete',
+    'coalesced',
+  ]) {
+    const completes = ['complete', 'coalesced'].includes(stage);
+    test(`${name} reset ${completes ? `accepts ${stage} completion` : `fails closed at ${stage} timeout`}`, () => {
       const trace = join(sandbox, `${name}-${stage}.trace`);
       const result = spawnSync(
         'expect',
@@ -84,7 +104,7 @@ for (const [name, source] of scripts) {
         stage,
         'The intended protocol stage must be reached',
       );
-      if (stage === 'complete') assert.equal(result.status, 0);
+      if (completes) assert.equal(result.status, 0);
       else assert.notEqual(result.status, 0, 'A timed-out reset must not report success');
     });
   }
