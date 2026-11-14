@@ -5354,3 +5354,164 @@ fn nonzero_opening_selects_exact_native_boundary_among_other_valid_boundaries() 
     entries.push(duplicate);
     assert!(plan_request(input).is_ok());
 }
+
+#[test]
+fn wallet_opening_and_reallocation_keep_independent_exact_effects() {
+    let mut before = wallet_opening_request();
+    before["intent"] = json!({"kind": "composite", "actions": [
+        before["intent"], request()["intent"]
+    ]});
+    let planned = plan(before.clone());
+    assert_eq!(
+        verify(verify_request(planned.clone(), before.clone(), "preconditions"))["valid"],
+        true
+    );
+    let mut after = before;
+    apply_reallocation_postconditions(&mut after);
+    apply_wallet_opening_postconditions(&mut after);
+    assert_eq!(
+        verify(verify_request(planned.clone(), after.clone(), "postconditions"))["valid"],
+        true
+    );
+    after["currentLedger"]["walletOpeningEquities"][0]["amount"] = money(1201, "USD");
+    assert_eq!(
+        verify(verify_request(planned, after, "postconditions"))["valid"],
+        false
+    );
+}
+
+#[test]
+fn exact_credit_recovery_rejects_changed_policy_claims_and_invalid_clock() {
+    let before = evidence_credit_request();
+    let planned = plan(before.clone());
+    let mut after = before;
+    let transaction = after["intent"]["transaction"].clone();
+    apply_manual_postconditions(&mut after, &transaction, 13500, 2500);
+    let exact = verify_request(planned, after, "postconditions");
+    assert_eq!(verify(exact.clone())["valid"], true);
+    for (pointer, reason) in [
+        (
+            "/decisionCardRequest/liquidityPolicy/version",
+            "policy_changed",
+        ),
+        (
+            "/decisionCardRequest/context/policyVersion",
+            "policy_changed",
+        ),
+        ("/decisionCardRequest/claimSet/revision", "claims_changed"),
+        ("/financialPolicyVersion", "policy_changed"),
+        ("/evaluatedAt", "invalid_plan"),
+    ] {
+        let mut changed = exact.clone();
+        *changed.pointer_mut(pointer).unwrap() = json!("changed");
+        let result = verify(changed);
+        assert_eq!(result["valid"], false, "{pointer}");
+        assert_eq!(result["reason"], reason, "{pointer}");
+    }
+}
+
+#[test]
+fn historical_wallet_recovery_needs_an_existing_nonempty_budget_anchor() {
+    for missing in [false, true] {
+        let mut before = historical_actual_wallet_request(false);
+        before["currentLedger"]["assignments"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        if missing {
+            before["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"]
+                .as_array_mut()
+                .unwrap()
+                .pop();
+        } else {
+            before["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"][0]
+                ["categories"] = json!({});
+        }
+        let planned = plan(before.clone());
+        let mut after = historical_actual_wallet_after(&before);
+        after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        after["currentLedger"]["assignments"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        assert_eq!(
+            verify(verify_request(planned.clone(), after.clone(), "postconditions"))["valid"],
+            true,
+            "missing={missing}"
+        );
+        actual_wallet_budget_month(&mut after, "2026-07");
+        let result = verify(verify_request(planned, after, "postconditions"));
+        assert_eq!(result["valid"], false, "missing={missing}");
+        assert_eq!(result["reason"], "source_changed", "missing={missing}");
+    }
+}
+
+#[test]
+fn wallet_opening_does_not_extend_an_older_existing_transaction_range() {
+    let mut before = historical_actual_wallet_request(false);
+    let previous = evidence_amendment_request();
+    before["currentLedger"]["transactions"] = json!([previous["intent"]["expected"]]);
+    before["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"] =
+        json!([previous["intent"]["expectedSource"]]);
+    actual_wallet_budget_month(&mut before, "2026-06");
+    actual_wallet_budget_month(&mut before, "2026-07");
+    let planned = plan(before.clone());
+    let mut after = historical_actual_wallet_after(&before);
+    after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    after["currentLedger"]["assignments"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert_eq!(
+        verify(verify_request(planned.clone(), after.clone(), "postconditions"))["valid"],
+        true
+    );
+    actual_wallet_budget_month(&mut after, "2026-05");
+    let result = verify(verify_request(planned, after, "postconditions"));
+    assert_eq!(result["valid"], false);
+    assert_eq!(result["reason"], "source_changed");
+}
+
+#[test]
+fn wallet_statement_anchors_require_dedicated_scope_and_nonempty_proofs() {
+    let input = wallet_opening_request();
+    assert!(plan_request(input.clone()).is_ok());
+    for (change, reason) in [
+        ("account_metadata", "wallet_anchor_metadata_not_allowed"),
+        ("resolution_metadata", "wallet_anchor_metadata_not_allowed"),
+        ("scope", "wallet_opening_anchor_invalid_scope"),
+        ("proofs", "wallet_opening_anchor_mismatch"),
+    ] {
+        let mut changed = input.clone();
+        let observations = changed["decisionCardRequest"]["financialSnapshot"]["observations"]
+            .as_array_mut()
+            .unwrap();
+        match change {
+            "account_metadata" | "resolution_metadata" => {
+                let metadata = observations.last().unwrap()["walletBalanceAnchor"].clone();
+                let kind = if change == "account_metadata" {
+                    "account_freshness"
+                } else {
+                    "economic_event_resolution"
+                };
+                observations.iter_mut().find(|row| row["kind"] == kind).unwrap()
+                    ["walletBalanceAnchor"] = metadata;
+            }
+            "scope" => {
+                observations.last_mut().unwrap()["scope"] =
+                    json!({"kind": "transaction", "id": "wallet-new-1"});
+            }
+            "proofs" => {
+                observations.last_mut().unwrap()["walletBalanceAnchor"]["proofIds"] = json!([]);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(plan_request(changed).unwrap_err(), reason, "{change}");
+    }
+}
