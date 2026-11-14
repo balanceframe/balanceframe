@@ -4995,6 +4995,255 @@ fn nonzero_wallet_equity_postconditions_restore_only_exact_native_equity_and_rej
     );
 }
 
+fn actual_wallet_budget_month(value: &mut Value, month: &str) {
+    value["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id": format!("budget_{month}"), "month": month,
+            "categories": {"food": {"categoryId": "food", "amount": money(0, "USD"),
+                "carryover": money(0, "USD"), "carryoverFromPrevious": money(0, "USD"), "carriesOver": false}}
+        }));
+    value["currentLedger"]["assignments"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"categoryId": "food", "asOfMonth": month, "amount": money(0, "USD")}));
+}
+
+fn historical_actual_wallet_request(empty_payees: bool) -> Value {
+    let mut before: Value = serde_json::from_str(
+        &wallet_opening_request()
+            .to_string()
+            .replace("2026-09-01", "2026-10-15")
+            .replace("2026-09-06", "2026-11-14")
+            .replace("2026-09", "2026-11"),
+    )
+    .unwrap();
+    before["decisionCardRequest"]["financialSnapshot"]["sourceNormalizationVersion"] =
+        json!("actual-normalizer/1");
+    if !empty_payees {
+        before["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"] =
+            json!([{"id": "existing-payee", "name": "Existing shop", "transferAccountId": null, "mtid": null}]);
+        before["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!("complete");
+    }
+    actual_wallet_budget_month(&mut before, "2026-08");
+    before
+}
+
+fn historical_actual_wallet_after(before: &Value) -> Value {
+    let mut after = before.clone();
+    apply_wallet_opening_postconditions(&mut after);
+    let mut after: Value = serde_json::from_str(
+        &after.to_string().replace(
+            "2026-09-01",
+            before["intent"]["opening"]["date"].as_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    after["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] =
+        json!("complete");
+    actual_wallet_budget_month(&mut after, "2026-07");
+    after
+}
+
+#[test]
+fn historical_actual_wallet_opening_restores_only_its_generated_empty_budget_prefix() {
+    for empty_payees in [false, true] {
+        for approved_prefix in [false, true] {
+            let mut before = historical_actual_wallet_request(empty_payees);
+            if approved_prefix {
+                actual_wallet_budget_month(&mut before, "2026-07");
+            }
+            let planned = plan(before.clone());
+            let mut after = historical_actual_wallet_after(&before);
+            if approved_prefix {
+                after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"]
+                    .as_array_mut()
+                    .unwrap()
+                    .pop();
+                after["currentLedger"]["assignments"]
+                    .as_array_mut()
+                    .unwrap()
+                    .pop();
+            }
+            let result = verify(verify_request(planned, after, "postconditions"));
+            assert_eq!(
+                result["valid"], true,
+                "empty_payees={empty_payees}, approved_prefix={approved_prefix}: {result}"
+            );
+        }
+    }
+}
+
+#[test]
+fn historical_actual_wallet_budget_restoration_rejects_unapproved_source_changes() {
+    let before = historical_actual_wallet_request(false);
+    let planned = plan(before.clone());
+    let after = historical_actual_wallet_after(&before);
+    for change in [
+        "amount",
+        "carryover",
+        "carryoverFromPrevious",
+        "carriesOver",
+        "currency",
+        "unknown-category",
+        "duplicate-category",
+        "duplicate-month",
+        "duplicate-assignment",
+        "missing-assignment",
+        "nonzero-assignment",
+        "unrelated-month",
+        "existing-month",
+        "payee",
+    ] {
+        let mut invalid = after.clone();
+        let budgets = &mut invalid["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]
+            ["budgets"];
+        match change {
+            "amount" | "carryover" | "carryoverFromPrevious" => {
+                budgets[1]["categories"]["food"][change] = money(1, "USD");
+            }
+            "carriesOver" => budgets[1]["categories"]["food"][change] = json!(true),
+            "currency" => budgets[1]["categories"]["food"]["amount"] = money(0, "EUR"),
+            "unknown-category" => {
+                budgets[1]["categories"]["unknown"] = budgets[1]["categories"]["food"].clone();
+                budgets[1]["categories"]["unknown"]["categoryId"] = json!("unknown");
+            }
+            "duplicate-category" => {
+                budgets[1]["categories"]["reserve"] = budgets[1]["categories"]["food"].clone();
+            }
+            "duplicate-month" => {
+                let duplicate = budgets[1].clone();
+                budgets.as_array_mut().unwrap().push(duplicate);
+            }
+            "existing-month" => budgets[0]["categories"]["food"]["amount"] = money(1, "USD"),
+            "duplicate-assignment" => {
+                let duplicate = invalid["currentLedger"]["assignments"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .clone();
+                invalid["currentLedger"]["assignments"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "missing-assignment" => {
+                invalid["currentLedger"]["assignments"].as_array_mut().unwrap().pop();
+            }
+            "nonzero-assignment" => {
+                invalid["currentLedger"]["assignments"]
+                    .as_array_mut()
+                    .unwrap()
+                    .last_mut()
+                    .unwrap()["amount"] = money(1, "USD");
+            }
+            "unrelated-month" => actual_wallet_budget_month(&mut invalid, "2026-06"),
+            "payee" => {
+                invalid["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"]
+                    [0]["name"] = json!("Changed shop");
+            }
+            _ => unreachable!(),
+        }
+        assert_ne!(
+            verify(verify_request(planned.clone(), invalid, "postconditions"))["valid"],
+            true,
+            "{change}"
+        );
+    }
+    for backend in ["manual", "actual"] {
+        let mut before = before.clone();
+        before["decisionCardRequest"]["financialSnapshot"]["source"]["ledgerBackend"] =
+            json!(backend);
+        if backend == "actual" {
+            before["intent"].as_object_mut().unwrap().remove("opening");
+        }
+        let planned = plan(before.clone());
+        let mut after = if backend == "actual" {
+            apply_wallet_postconditions(&mut before, true);
+            before
+        } else {
+            historical_actual_wallet_after(&before)
+        };
+        if backend != "actual" {
+            after["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"]
+                .as_array_mut()
+                .unwrap()
+                .pop();
+            after["currentLedger"]["assignments"].as_array_mut().unwrap().pop();
+        }
+        assert_eq!(
+            verify(verify_request(planned.clone(), after.clone(), "postconditions"))["valid"],
+            true,
+            "unchanged {backend}"
+        );
+        actual_wallet_budget_month(&mut after, "2026-07");
+        assert_ne!(
+            verify(verify_request(planned, after, "postconditions"))["valid"],
+            true,
+            "{backend}"
+        );
+    }
+}
+
+#[test]
+fn historical_actual_wallet_budget_prefix_spans_years_without_erasing_approved_months() {
+    let before: Value = serde_json::from_str(
+        &historical_actual_wallet_request(false)
+            .to_string()
+            .replace("2026-11", "2026-05")
+            .replace("2026-10-15", "2026-03-15")
+            .replace("2026-08", "2026-02"),
+    )
+    .unwrap();
+    let planned = plan(before.clone());
+    let mut after: Value = serde_json::from_str(
+        &historical_actual_wallet_after(&before)
+            .to_string()
+            .replace("2026-07", "2025-12"),
+    )
+    .unwrap();
+    actual_wallet_budget_month(&mut after, "2026-01");
+    assert_eq!(
+        verify(verify_request(planned, after, "postconditions"))["valid"],
+        true
+    );
+
+    let mut before = historical_actual_wallet_request(true);
+    let mut after = historical_actual_wallet_after(&before);
+    actual_wallet_budget_month(&mut before, "2026-07");
+    let planned = plan(before);
+    for change in ["missing", "changed", "unrelated"] {
+        let mut invalid = after.clone();
+        match change {
+            "missing" => {
+                invalid["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"]
+                    .as_array_mut()
+                    .unwrap()
+                    .pop();
+                invalid["currentLedger"]["assignments"].as_array_mut().unwrap().pop();
+            }
+            "changed" => invalid["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]
+                ["budgets"][1]["categories"]["food"]["amount"] = money(1, "USD"),
+            "unrelated" => invalid["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]
+                ["budgets"][0]["categories"]["food"]["amount"] = money(1, "USD"),
+            _ => unreachable!(),
+        }
+        assert_ne!(
+            verify(verify_request(planned.clone(), invalid, "postconditions"))["valid"],
+            true,
+            "{change} approved month"
+        );
+    }
+    after["decisionCardRequest"]["financialSnapshot"]["sourceNormalizationVersion"] =
+        json!("other-normalizer/1");
+    assert_ne!(
+        verify(verify_request(planned, after, "postconditions"))["valid"],
+        true
+    );
+}
+
 #[test]
 fn independent_wallet_openings_share_only_the_sdk_created_starting_balance_payee() {
     let mut before = wallet_opening_request();
