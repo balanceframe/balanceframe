@@ -33,9 +33,9 @@ function parserSignature(algorithmHex) {
   return forge.util.hexToBytes('0001' + 'ff'.repeat(128 - digestInfo.length - 3) + '00') + digestInfo;
 }
 
-test('Nuxt Nitro/listhen resolves node-forge at the approved unchanged version', () => {
-  assert.equal(listhenRequire('node-forge/package.json').version, '1.4.0');
-  assert.equal(forgeRequire('./package.json').version, '1.4.0');
+test('Nuxt Nitro/listhen resolves node-forge at the approved fixed version', () => {
+  assert.equal(listhenRequire('node-forge/package.json').version, '1.4.3');
+  assert.equal(forgeRequire('./package.json').version, '1.4.3');
 });
 
 for (const [name, algorithm] of [
