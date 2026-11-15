@@ -348,36 +348,23 @@ function spawnChild(
   return { process: child, name };
 }
 
-function childExitError(child: ChildProcess, name: string): Promise<never> {
-  return new Promise<never>((_, reject) => {
-    const onError = (error: Error) => {
-      cleanup();
-      reject(new Error(`${name} child failed to start: ${error.message}`));
-    };
-    const onExit = (code: number | null, signal: string | null) => {
-      cleanup();
-      const status = signal ? `signal ${signal}` : `code ${String(code)}`;
-      reject(new Error(`${name} child exited before readiness (${status})`));
-    };
-    const cleanup = () => {
-      child.off('error', onError);
-      child.off('exit', onExit);
-    };
-    child.once('error', onError);
-    child.once('exit', onExit);
-  });
-}
-
-async function probeHttp(url: string): Promise<boolean> {
+async function probeHttp(url: string, signal: AbortSignal): Promise<boolean> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  const abort = () => controller.abort();
+  signal.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(abort, PROBE_TIMEOUT_MS);
   try {
     const response = await fetch(url, { signal: controller.signal });
-    return response.status >= 100 && response.status < 500;
+    try {
+      return response.status >= 100 && response.status < 500;
+    } finally {
+      await response.body?.cancel();
+    }
   } catch {
     return false;
   } finally {
     clearTimeout(timer);
+    signal.removeEventListener('abort', abort);
   }
 }
 
@@ -387,19 +374,39 @@ async function waitForHttp(
   name: string,
   timeoutMs = STARTUP_TIMEOUT_MS,
 ): Promise<void> {
-  const startedAt = Date.now();
-  const exited = childExitError(child, name);
-  while (Date.now() - startedAt < timeoutMs) {
-    const remaining = timeoutMs - (Date.now() - startedAt);
-    const probe = probeHttp(url);
-    const ready = await Promise.race([
-      probe,
-      exited.then(() => false as const),
-      new Promise<false>((resolveReady) => setTimeout(() => resolveReady(false), Math.min(remaining, PROBE_TIMEOUT_MS))),
-    ]);
-    if (ready) return;
-  }
-  throw new Error(`${name} child did not become ready over HTTP`);
+  return await new Promise<void>((resolveReady, reject) => {
+    const controller = new AbortController();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const deadline = setTimeout(() => finish(new Error(`${name} child did not become ready over HTTP`)), timeoutMs);
+    function finish(error?: Error): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (retry !== undefined) clearTimeout(retry);
+      child.off('error', onError);
+      child.off('exit', onExit);
+      controller.abort();
+      if (error) reject(error);
+      else resolveReady();
+    }
+    function onError(error: Error): void {
+      finish(new Error(`${name} child failed to start: ${error.message}`));
+    }
+    function onExit(code: number | null, signal: string | null): void {
+      const status = signal ? `signal ${signal}` : `code ${String(code)}`;
+      finish(new Error(`${name} child exited before readiness (${status})`));
+    }
+    async function probe(): Promise<void> {
+      const ready = await probeHttp(url, controller.signal);
+      if (settled) return;
+      if (ready) finish();
+      else retry = setTimeout(() => { void probe(); }, 100);
+    }
+    child.once('error', onError);
+    child.once('exit', onExit);
+    void probe();
+  });
 }
 
 async function stopChild(child: ChildProcess): Promise<void> {
