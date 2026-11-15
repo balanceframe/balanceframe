@@ -16,6 +16,7 @@
     "./providers/openai": "./dist/providers/openai.js",
     "./providers/valueserp": "./dist/providers/valueserp.js",
     "./merchant-research": "./dist/merchant-research.js",
+    "./decision-card-explanation": "./dist/decision-card-explanation.js",
     "./types": "./dist/types.js",
     "./validators": "./dist/validators.js"
   },

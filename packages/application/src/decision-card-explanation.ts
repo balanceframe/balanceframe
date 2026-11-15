@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { decisionExplanationFactsSchema } from '@balanceframe/inference';
+import { decisionExplanationFactsSchema } from '@balanceframe/inference/decision-card-explanation';
 import type { DecisionExplanationProvider } from '@balanceframe/inference';
 import { decisionCardSchema, moneySchema } from '@balanceframe/protocol-generated/validators';
 import type { FinancialSnapshot } from '@balanceframe/protocol-generated';

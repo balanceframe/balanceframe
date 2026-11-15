@@ -42,7 +42,7 @@
 </template>
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { decisionCardExplanationSummarySchema, decisionCardExplanationViewSchema } from '@balanceframe/application';
+import { decisionCardExplanationSummarySchema, decisionCardExplanationViewSchema } from '@balanceframe/application/decision-card-explanation';
 import type {
   DecisionCardExplanationView,
   LiquidityPurchaseIntent,
