@@ -434,16 +434,22 @@ function expectScript(): string {
   return `
 set timeout 30
 log_user 0
-spawn actual-server --reset-password
-expect -re "Enter a password, then press enter:" {
-  send -- "$env(ACTUAL_SECRET_KEY)"
-  after 500
+proc enter_password {} {
+  global env spawn_id
+  # Wait for masked echo before Enter so input cannot coalesce with its terminator.
+  foreach character [split $env(ACTUAL_SECRET_KEY) ""] {
+    send -- $character
+    expect -exact "*"
+  }
   send -- "\\r"
 }
+spawn actual-server --reset-password
+expect_before timeout { exit 1 }
+expect -re "Enter a password, then press enter:" {
+  enter_password
+}
 expect -re "Enter the password again, then press enter:" {
-  send -- "$env(ACTUAL_SECRET_KEY)"
-  after 500
-  send -- "\\r"
+  enter_password
 }
 expect {
   -re "Password (set|changed)!" {
