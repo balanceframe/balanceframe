@@ -300,15 +300,10 @@ describe('03 — Read Entities & Queries', () => {
         name: `Carryover-${Date.now()}`,
         avoidUpload: false,
       });
+      await seedFixtureData();
 
-      // Create a budget month and check carryover
       const monthData = await getBudgetMonth('2026-07');
-      if (monthData && typeof monthData === 'object') {
-        // Check that budget month has carryover field
-        const md = monthData as Record<string, unknown>;
-        // When creating a fresh budget, carryover defaults may apply
-        expect(md).toHaveProperty('month');
-      }
+      expect(monthData).toHaveProperty('month', '2026-07');
     });
   });
 
