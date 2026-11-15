@@ -17,6 +17,9 @@ test('approved override edges satisfy their actual consuming package ranges', ()
   const targets = new Set([
     'nitropack',
     '@nuxt/devtools',
+    '@nuxt/kit',
+    '@nuxt/schema',
+    'node-forge',
     'postcss',
     'baseline-browser-mapping',
     'fast-uri',
