@@ -82,12 +82,15 @@ test('PKCS12 PBE refuses zero and negative iteration counts', () => {
 });
 
 const { privateKey } = generateKeyPairSync('rsa', {
-  modulusLength: 1024,
+  modulusLength: 2048,
   privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
   publicKeyEncoding: { type: 'spki', format: 'pem' },
 });
 const key = f.pki.privateKeyFromPem(privateKey);
 const publicKey = f.pki.rsa.setPublicKey(key.n, key.e);
+test('RSA certificate fixtures use at least 2048-bit keys', () => {
+  assert.ok(key.n.bitLength() >= 2048);
+});
 let serial = 1;
 function cert(name, issuer, extensions) {
   const c = f.pki.createCertificate();
