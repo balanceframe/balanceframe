@@ -12,7 +12,8 @@
     "./commands": "./dist/application/src/commands.js",
     "./errors": "./dist/application/src/errors.js",
     "./composition": "./dist/application/src/composition.js",
-    "./connection-manager": "./dist/application/src/connection-manager.js"
+    "./connection-manager": "./dist/application/src/connection-manager.js",
+    "./decision-card-explanation": "./dist/application/src/decision-card-explanation.js"
   },
   "scripts": {
     "build": "tsc",

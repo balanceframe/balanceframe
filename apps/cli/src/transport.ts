@@ -229,7 +229,7 @@ async function send(
     else headers.set('authorization', `Bearer ${apiKey}`);
     if (selected) headers.set('X-BalanceFrame-Space', selected);
     if (options.body !== undefined) headers.set('content-type', 'application/json');
-    if ((merchantResponseSchemas[path] || path.startsWith('/api/evidence')) && method !== 'GET') headers.set('origin', base.origin);
+    if ((merchantResponseSchemas[path] || path.startsWith('/api/evidence') || path === '/api/purchase/explain') && method !== 'GET') headers.set('origin', base.origin);
   } catch {
     return cliError(requestId, 'invalid_server_auth', 'The configured BalanceFrame credential or space is invalid.');
   }
@@ -686,6 +686,15 @@ export async function runServerCommand(cmd: CliCommand, requestId: string): Prom
       return get('/api/rule');
     case 'rules.show':
       return get(`/api/rule/${encodeURIComponent(cmd.ruleId ?? '')}`);
+    case 'purchase.explain':
+      return post('/api/purchase/explain', {
+        kind: 'purchase',
+        categoryId: options['category-id'],
+        amount: { minorUnits: options.amount, currency: options.currency ?? 'USD' },
+        ...(options['account-id'] ? { accountId: options['account-id'] } : {}),
+        ...(options['purchase-at'] ? { purchaseAt: options['purchase-at'] } : {}),
+        ...(options['required-by'] ? { requiredBy: options['required-by'] } : {}),
+      });
     case 'purchase.evaluate':
       return get('/api/purchase/evaluate', {
         categoryId: options['category-id'] ?? '',

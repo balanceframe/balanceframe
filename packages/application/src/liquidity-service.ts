@@ -1,4 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { runDecisionCardExplanation } from '@balanceframe/inference';
+import {
+  decisionCardExplanationFacts,
+  decisionCardExplanationSource,
+  decisionCardExplanationViewSchema,
+} from './decision-card-explanation.js';
+import type {
+  DecisionCardExplanationRuntime,
+  DecisionCardExplanationView,
+} from './decision-card-explanation.js';
 import { loadNativeBindings } from './composition.js';
 import type { ConnectionManager, ConnectedBudget } from './connection-manager.js';
 import type {
@@ -751,9 +761,77 @@ export class LiquidityService {
     actor: LiquidityActor,
     value: unknown,
   ): Promise<{ card: PublicDecisionCard }> {
+    const { card } = await this.capturePurchaseDecision(actor, value);
+    return { card };
+  }
+
+  /** Explain the current authorized Card without accepting model financial facts or actions. */
+  async explainPurchase(
+    actor: LiquidityActor,
+    value: unknown,
+    runtime: DecisionCardExplanationRuntime,
+  ): Promise<{ card: PublicDecisionCard; explanation: DecisionCardExplanationView }> {
+    const intent = liquidityPurchaseInputSchema.parse(value);
+    const authorize = async () => {
+      await runtime.authorize?.();
+      this.require(
+        { ...actor, now: this.clock().toISOString() },
+        'budget',
+        actor.budgetId,
+        'affordability:evaluate',
+      );
+    };
+    await authorize();
+    const original = await this.capturePurchaseDecision(
+      { ...actor, now: this.clock().toISOString() },
+      intent,
+      true,
+    );
+    const facts = decisionCardExplanationFacts(original.card);
+    const revalidate = async () => {
+      await authorize();
+      const current = await this.capturePurchaseDecision(
+        { ...actor, now: this.clock().toISOString() },
+        intent,
+        true,
+      );
+      if (
+        current.binding !== original.binding ||
+        JSON.stringify(decisionCardExplanationFacts(current.card)) !== JSON.stringify(facts) ||
+        (original.card.expiresAt && Date.parse(original.card.expiresAt) <= this.clock().getTime())
+      )
+        throw new Error('Decision context changed; refresh the current Card');
+    };
+    const outcome = await runDecisionCardExplanation(
+      runtime.provider,
+      facts.map(({ id, kind, code }) => ({ id, kind, ...(code ? { code } : {}) })),
+      runtime.policy,
+      revalidate,
+      runtime.admit,
+    );
+    await revalidate();
+    if (outcome.status === 'manual' && outcome.code === 'changed')
+      throw new Error('Decision context changed; refresh the current Card');
+    const explanation = decisionCardExplanationViewSchema.parse(
+      outcome.status === 'explained'
+        ? {
+            status: 'explained',
+            facts: outcome.factIds.map((id) => facts.find((fact) => fact.id === id)!),
+            provenance: outcome.provenance,
+          }
+        : outcome,
+    );
+    return { card: original.card, explanation };
+  }
+
+  private async capturePurchaseDecision(
+    actor: LiquidityActor,
+    value: unknown,
+    bindSource = false,
+  ): Promise<{ card: PublicDecisionCard; binding: string | null }> {
     const intent = liquidityPurchaseInputSchema.parse(value);
     this.authorizeIntent(actor, intent.categoryId, intent.accountId);
-    return this.capture(actor, async (capture) => {
+    return this.capture(actor, async (capture, connected) => {
       const [item] = this.items(
         actor,
         capture,
@@ -770,7 +848,26 @@ export class LiquidityService {
         null,
       );
       if (!item) throw new Error('Purchase item unavailable');
-      return { card: this.decisionCard(capture, [{ ...item, priority: 'planned' }]) };
+      return {
+        card: this.decisionCard(capture, [{ ...item, priority: 'planned' }]),
+        binding: bindSource ? createHash('sha256')
+          .update(
+            canonical({
+              connection: connected.config,
+              source: decisionCardExplanationSource(capture.snapshot),
+              state: capture.state,
+              intent,
+              actor: {
+                actorId: actor.actorId,
+                budgetId: actor.budgetId,
+                spaceId: actor.spaceId,
+                membershipId: actor.membershipId,
+                policyVersion: actor.governancePolicyVersion,
+              },
+            }),
+          )
+          .digest('hex') : null,
+      };
     });
   }
   async previewReallocation(actor: LiquidityActor, value: unknown): Promise<PublicLiquidityView> {

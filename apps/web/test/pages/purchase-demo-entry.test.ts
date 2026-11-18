@@ -36,6 +36,7 @@ const stubs = {
     emits: ['click'],
   },
   DecisionCardView: true,
+  DecisionCardExplanation: true,
   TransferPlanReview: true,
 };
 
