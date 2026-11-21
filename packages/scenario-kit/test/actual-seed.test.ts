@@ -253,6 +253,36 @@ afterAll(() => {
   rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
+describe('historical Actual budget month initialization', () => {
+  it('preserves budget assignments when historical transactions extend Actual beyond its initial month range', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'balanceframe-historical-budget-'));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
+    try {
+      // Keep the fixed SDK clock local instead of sharing it with a real server.
+      await init({ dataDir });
+      if (!actualSdk.internal) throw new Error('Actual API client is not initialized');
+      await actualSdk.internal.send('create-budget', {
+        budgetName: 'Historical budget month range',
+        avoidUpload: true,
+      });
+      const ids = await populateActualBudget(seedLedger());
+      const month = await getBudgetMonth('2026-07');
+      const category = month.categoryGroups.flatMap((group) => group.categories)
+        .find((row) => row.id === ids.categoryIds.cat_2);
+      expect(category?.budgeted).toBe(2000);
+    } finally {
+      try {
+        await shutdown();
+        rmSync(dataDir, { recursive: true, force: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+});
+
 describe('shared ProtocolSnapshot Actual seeder', () => {
   beforeAll(async () => {
     const root = createOwnedScenarioRoot();
