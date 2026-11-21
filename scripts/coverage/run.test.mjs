@@ -32,6 +32,14 @@ test('portable CI gives each mandatory test command its own failure gate', () =>
   }
 });
 
+test('portable CI pins distinct supported macOS architecture images', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/test.yml', import.meta.url), 'utf8');
+  const portable = workflow.slice(workflow.indexOf('\n  portable:'));
+  const matrix = portable.slice(0, portable.indexOf('\n    steps:'));
+  assert.match(matrix, /name: macOS ARM64\n\s+runner: macos-15\n/);
+  assert.match(matrix, /name: macOS x86_64\n\s+runner: macos-15-intel\n/);
+});
+
 async function waitForFile(path) {
   for (let attempt = 0; attempt < 1000; attempt++) {
     if (existsSync(path)) return JSON.parse(readFileSync(path, 'utf8'));

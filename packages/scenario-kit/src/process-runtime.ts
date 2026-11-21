@@ -271,6 +271,7 @@ function buildChildEnvironment(
 ): Record<string, string> {
   return {
     PATH: childPathEnvironment(),
+    TZ: 'UTC',
     HOME: directories.home,
     TMPDIR: directories.temp,
     TMP: directories.temp,
