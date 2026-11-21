@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,7 +34,14 @@ const load = (name: string): unknown =>
 const money = (minorUnits: string) => ({ minorUnits, currency: 'USD' });
 
 describe('12 — real SDK governed plural evidence allocation', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('independently approves one exact matrix, amends the same imported parents, and recovers lost acknowledgement by readonly proof', async () => {
+    // Keep the current-month liquidity facts aligned with the fixed October matrix evidence.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-21T12:00:00.000Z'));
     const directory = mkdtempSync(join(tmpdir(), 'balanceframe-matrix-governance-sdk-'));
     mkdirSync(join(directory, 'seed'));
     mkdirSync(join(directory, 'cleanup'));
@@ -212,6 +219,15 @@ describe('12 — real SDK governed plural evidence allocation', () => {
           (connected.synchronization as { financialSnapshot: FinancialSnapshot }).financialSnapshot,
         { expectedBudgetId: seeded.budgetId },
       );
+      for (const categoryId of seeded.categoryIds)
+        expect(source.liquidity?.categories).toContainEqual(
+          expect.objectContaining({
+            categoryId,
+            asOfMonth: '2026-10',
+            periodKind: 'current',
+            evidence: expect.objectContaining({ state: 'known' }),
+          }),
+        );
       const readRights = [
         'observe',
         'conclusion',
@@ -549,6 +565,7 @@ describe('12 — real SDK governed plural evidence allocation', () => {
       const childIds = after.raw.map((raw) => raw.children.map((c) => c.id));
       clockNow = new Date(Date.parse(stored.expiresAt) + 1000).toISOString();
       recoveryClock = clockNow;
+      vi.setSystemTime(new Date(clockNow));
       expect((await consequential.reconcile(actor, stored.id)).phase).toBe('verified');
       expect(writes.filter((w) => parentIds.includes(w.id))).toHaveLength(2);
       expect((await consequential.execute(actor, stored.id)).phase).toBe('verified');

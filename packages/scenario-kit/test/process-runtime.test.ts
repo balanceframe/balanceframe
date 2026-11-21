@@ -232,6 +232,56 @@ async function textFilesUnder(root: string): Promise<string[]> {
 }
 
 describe('scenario process runtime ownership and lifecycle', () => {
+  it('pins the scenario test runner to the UTC fixture calendar', () => {
+    expect(process.env.TZ).toBe('UTC');
+    const instant = new Date('2026-11-14T04:30:00.000Z');
+    expect([instant.getFullYear(), instant.getMonth() + 1, instant.getDate()]).toEqual([
+      2026, 11, 14,
+    ]);
+  });
+
+  it('pins the production web child to UTC despite a Chicago parent calendar', { timeout: TEST_TIMEOUT }, async () => {
+    const root = createOwnedScenarioRoot();
+    const entryParent = await temporaryDirectory('balanceframe-process-timezone-');
+    const entry = join(entryParent, 'web-timezone.mjs');
+    const observationPath = join(entryParent, 'timezone.json');
+    const previousTimezone = process.env.TZ;
+    let handle: ScenarioProcesses | undefined;
+    try {
+      process.env.TZ = 'America/Chicago';
+      expect(new Date('2026-11-14T04:30:00.000Z').getDate()).toBe(13);
+      await writeFile(
+        entry,
+        [
+          "import { writeFile } from 'node:fs/promises';",
+          "const instant = new Date('2026-11-14T04:30:00.000Z');",
+          'const localDate = [instant.getFullYear(), instant.getMonth() + 1, instant.getDate()];',
+          `await writeFile(${JSON.stringify(observationPath)}, JSON.stringify({ timezone: process.env.TZ, localDate }), { mode: 0o600 });`,
+          `await import(${JSON.stringify(pathToFileURL(WEB_ENTRY).href)});`,
+        ].join('\n'),
+        { mode: 0o600 },
+      );
+      handle = await startScenarioShell({ root, webEntry: entry });
+      activeProcesses.add(handle);
+      expect((await requestHealth(handle.webUrl)).status).toBe(200);
+      expect(JSON.parse(await readFile(observationPath, 'utf8'))).toEqual({
+        timezone: 'UTC', localDate: [2026, 11, 14],
+      });
+      await assertMode(observationPath, 0o600);
+    } finally {
+      if (previousTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTimezone;
+      if (handle) {
+        activeProcesses.delete(handle);
+        await stopScenarioProcesses(handle);
+      } else {
+        discardOwnedScenarioRoot(root);
+      }
+      await rm(entryParent, { recursive: true, force: true });
+    }
+    await assertMissing(root);
+  });
+
   it('reads only active owned child memory across Actual startup and disposal', { timeout: TEST_TIMEOUT }, async () => {
     const handle = await startShell();
     const shellMemory = readScenarioProcessMemory(handle);
