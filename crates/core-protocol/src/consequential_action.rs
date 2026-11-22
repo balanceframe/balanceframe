@@ -5342,18 +5342,21 @@ where
         return Ok(invalid(ConsequentialActionVerificationReason::InvalidPlan));
     }
     let invalidated_freshness_accounts = request.plan.source.invalidated_freshness_accounts.clone();
-    let mut source_hash_material = SourceHashMaterial {
-        decision_card_request: &restored.decision_card_request,
-        action: &restored.intent,
-        ledger: &restored.current_ledger,
-        evidence: &restored.resolved_evidence,
-        financial_policy_version: &restored.financial_policy_version,
-        idempotency_key: &restored.idempotency_key,
-        invalidated_freshness_accounts: &invalidated_freshness_accounts,
-        invalidated_supplemental_facts: &request.plan.source.invalidated_supplemental_facts,
-        manual_payee_bindings: &request.plan.source.manual_payee_bindings,
+    let source_matches = |candidate: &PlanConsequentialActionRequest| -> Result<bool, String> {
+        let material = SourceHashMaterial {
+            decision_card_request: &candidate.decision_card_request,
+            action: &candidate.intent,
+            ledger: &candidate.current_ledger,
+            evidence: &candidate.resolved_evidence,
+            financial_policy_version: &candidate.financial_policy_version,
+            idempotency_key: &candidate.idempotency_key,
+            invalidated_freshness_accounts: &invalidated_freshness_accounts,
+            invalidated_supplemental_facts: &request.plan.source.invalidated_supplemental_facts,
+            manual_payee_bindings: &request.plan.source.manual_payee_bindings,
+        };
+        Ok(hash_material(&material, true)? == request.plan.source.invariants_hash)
     };
-    if hash_material(&source_hash_material, true)? != request.plan.source.invariants_hash {
+    if !source_matches(&restored)? {
         let snapshot = &restored.decision_card_request.financial_snapshot;
         let creates_payee = request
             .plan
@@ -5367,24 +5370,34 @@ where
                     AtomicConsequentialActionIntent::WalletMaterialization { .. }
                 )
             });
-        if snapshot.coverage.payees != CoverageState::Complete
-            || !snapshot.legacy_snapshot.payees.is_empty()
-            || !creates_payee
-        {
+        let can_restore_payee_coverage = snapshot.coverage.payees == CoverageState::Complete
+            && snapshot.legacy_snapshot.payees.is_empty()
+            && creates_payee;
+        let mut matched = None;
+        for restore_prefix in [false, true] {
+            let mut candidate = restored.clone();
+            if restore_prefix {
+                restore_actual_wallet_budget_prefix(&mut candidate);
+            }
+            if !source_matches(&candidate)? && can_restore_payee_coverage {
+                candidate
+                    .decision_card_request
+                    .financial_snapshot
+                    .coverage
+                    .payees = CoverageState::Empty;
+            }
+            // Every candidate must reproduce the entire approved source, including any preexisting zero months.
+            if source_matches(&candidate)? {
+                matched = Some(candidate);
+                break;
+            }
+        }
+        let Some(candidate) = matched else {
             return Ok(invalid(
                 ConsequentialActionVerificationReason::SourceChanged,
             ));
-        }
-        // Restore first-payee coverage only when the exact approved source hash proves it.
-        let mut empty_payee_card = restored.decision_card_request.clone();
-        empty_payee_card.financial_snapshot.coverage.payees = CoverageState::Empty;
-        source_hash_material.decision_card_request = &empty_payee_card;
-        if hash_material(&source_hash_material, true)? != request.plan.source.invariants_hash {
-            return Ok(invalid(
-                ConsequentialActionVerificationReason::SourceChanged,
-            ));
-        }
-        restored.decision_card_request = empty_payee_card;
+        };
+        restored = candidate;
     }
     // Replanning after this write would require a freshness attestation the source correctly invalidated.
     if invalidated_freshness_accounts.is_empty() {
@@ -5485,6 +5498,131 @@ fn validate_postcondition_times(
         validate_fact(&route.evidence)?;
     }
     Ok(())
+}
+
+// Actual adds three months before its earliest transaction; a historical opening can extend only that zero prefix.
+fn restore_actual_wallet_budget_prefix(request: &mut PlanConsequentialActionRequest) {
+    fn month_number(month: &str) -> Option<i32> {
+        if !valid_month(month) {
+            return None;
+        }
+        Some(month[..4].parse::<i32>().ok()? * 12 + month[5..].parse::<i32>().ok()? - 1)
+    }
+    let snapshot = &mut request.decision_card_request.financial_snapshot;
+    if snapshot.source.ledger_backend != "actual"
+        || !snapshot.source_normalization_version.starts_with("actual-normalizer/")
+    {
+        return;
+    }
+    let Some(mut oldest) = snapshot.captured_at.get(..7).and_then(month_number) else {
+        return;
+    };
+    for row in &snapshot.legacy_snapshot.transactions {
+        let Some(month) = row.date.get(..7).and_then(month_number) else {
+            return;
+        };
+        oldest = oldest.min(month);
+    }
+    let Some((opening_month, currency)) = request
+        .intent
+        .atoms()
+        .iter()
+        .filter_map(|atom| {
+            if let AtomicConsequentialActionIntent::WalletMaterialization {
+                opening: Some(opening),
+                currency,
+                ..
+            } = atom
+            {
+                Some((month_number(opening.date.get(..7)?)?, currency.clone()))
+            } else {
+                None
+            }
+        })
+        .min_by_key(|(month, _)| *month)
+    else {
+        return;
+    };
+    let original_start = oldest - 3;
+    let expanded_start = opening_month - 3;
+    if expanded_start < 12 || expanded_start >= original_start {
+        return;
+    }
+    let budgets = &snapshot.legacy_snapshot.budgets;
+    let anchors: Vec<_> = budgets
+        .iter()
+        .filter(|budget| month_number(&budget.month) == Some(original_start))
+        .collect();
+    if anchors.len() != 1 || anchors[0].categories.is_empty() {
+        return;
+    }
+    let categories: BTreeSet<_> = anchors[0].categories.keys().collect();
+    if categories.iter().any(|id| {
+        !request
+            .current_ledger
+            .categories
+            .iter()
+            .any(|category| &category.category_id == *id)
+    }) {
+        return;
+    }
+    let prefix: Vec<_> = budgets
+        .iter()
+        .filter(|budget| {
+            month_number(&budget.month)
+                .is_some_and(|month| (expanded_start..original_start).contains(&month))
+        })
+        .collect();
+    let months: BTreeSet<_> = prefix.iter().map(|budget| budget.month.as_str()).collect();
+    if prefix.len() != (original_start - expanded_start) as usize || months.len() != prefix.len() {
+        return;
+    }
+    for budget in &prefix {
+        if budget.id != format!("budget_{}", budget.month)
+            || budget.categories.keys().collect::<BTreeSet<_>>() != categories
+            || budget.categories.iter().any(|(id, category)| {
+                category.category_id != *id
+                    || category.carries_over
+                    || [
+                        &category.amount,
+                        &category.carryover,
+                        &category.carryover_from_previous,
+                    ]
+                    .iter()
+                    .any(|amount| amount.minor_units() != 0 || amount.currency() != currency)
+            })
+        {
+            return;
+        }
+        for (id, category) in &budget.categories {
+            if !request.current_ledger.assignments.iter().any(|assignment| {
+                assignment.as_of_month == budget.month
+                    && assignment.category_id == *id
+                    && assignment.amount == category.amount
+            }) {
+                return;
+            }
+        }
+    }
+    if request
+        .current_ledger
+        .assignments
+        .iter()
+        .filter(|assignment| months.contains(assignment.as_of_month.as_str()))
+        .count()
+        != months.len() * categories.len()
+    {
+        return;
+    }
+    request
+        .current_ledger
+        .assignments
+        .retain(|assignment| !months.contains(assignment.as_of_month.as_str()));
+    let months: BTreeSet<_> = months.into_iter().map(str::to_owned).collect();
+    snapshot
+        .legacy_snapshot
+        .budgets
+        .retain(|budget| !months.contains(&budget.month));
 }
 
 // Replay only capture metadata already excluded from exact source hashes; financial and human facts stay intact.

@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
+    env: { TZ: 'UTC' },
     // Each live case owns an Actual and Nuxt child; native addons need fork isolation.
     pool: 'forks',
     maxWorkers: 1,

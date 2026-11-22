@@ -9,7 +9,7 @@ const nuxtRequire = createRequire(webRequire.resolve('nuxt/package.json'));
 const packagePath = nuxtRequire.resolve('undici');
 
 test('Nuxt resolves the fixed compatible npm Undici release', () => {
-  assert.equal(nuxtRequire('undici/package.json').version, '8.12.2');
+  assert.equal(nuxtRequire('undici/package.json').version, '8.12.4');
 });
 
 for (const scenario of ['excess-early-close', 'ordinary']) {
