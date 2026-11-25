@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const { mockGetRequestPath, mockGetHeader, mockSetResponseStatus } = vi.hoisted(() => {
@@ -109,7 +109,7 @@ function writeManifest(overrides: Record<string, unknown> = {}): void {
 }
 
 beforeAll(() => {
-  root = mkdtempSync(join('/tmp', 'balanceframe-demo-boundary-'));
+  root = realpathSync(mkdtempSync(join('/tmp', 'balanceframe-demo-boundary-')));
   chmodSync(root, 0o700);
   manifestPath = join(root, 'manifest.json');
   authDbPath = join(root, 'auth.sqlite');

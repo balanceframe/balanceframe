@@ -44,7 +44,7 @@
     "@vue/test-utils": "^2.5.1",
     "adm-zip": "0.6.1",
     "happy-dom": "^21.0.4",
-    "nuxt": "4.6.2",
+    "nuxt": "4.6.4",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.0.0",
     "vitest": "^4.1.12",
