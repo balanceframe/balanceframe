@@ -1,0 +1,7 @@
+{
+  "production-default": "@charset \"UTF-8\";\n@font-face{font-family:Próbé;src:url(/synthetic-probe.woff2) format(woff2);font-display:swap;font-weight:400;font-style:normal}\n\n.probe { font-family: \"Próbé\", sans-serif; color: red; }",
+  "development": "@charset \"UTF-8\";\n@font-face {\n  font-family: 'Próbé';\n  src: url(\"/synthetic-probe.woff2\") format(woff2);\n  font-display: swap;\n  font-weight: 400;\n  font-style: normal;\n}\n\n.probe { font-family: \"Próbé\", sans-serif; color: red; }",
+  "ascii": "@charset \"UTF-8\";\n@font-face{font-family:Pr\\f3 b\\e9;src:url(/synthetic-probe.woff2) format(woff2);font-display:swap;font-weight:400;font-style:normal}\n\n.probe { font-family: \"Próbé\", sans-serif; color: red; }",
+  "configured-minification": "@charset \"UTF-8\";\n@font-face {\n  font-family: 'Próbé';\n  src: url(\"/synthetic-probe.woff2\") format(woff2);\n  font-display: swap;\n  font-weight: 400;\n  font-style: normal;\n}\n.probe { font-family: \"Próbé\", sans-serif; color: red; }",
+  "error-fallback": "@charset \"UTF-8\";\n@font-face {\n  font-family: 'Próbé';\n  src: url(\"/synthetic-probe.woff2\") format(woff2);\n  font-display: swap;\n  font-weight: 400;\n  font-style: normal;\n}\n.probe { font-family: \"Próbé\", sans-serif; color: red; }"
+}

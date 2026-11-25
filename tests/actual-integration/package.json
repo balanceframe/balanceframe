@@ -15,8 +15,8 @@
   "devDependencies": {
     "@actual-app/api": "^26.10.0",
     "@types/node": "^20.0.0",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
     "dotenv": "^16.4.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }
