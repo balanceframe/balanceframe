@@ -377,7 +377,7 @@ Research is a **closed fixture provider through the real coordinator, policies, 
 
 #### Transaction evidence walkthroughs (v0.9.0)
 
-All five evidence stories open `/evidence` and offer owner, two independent approvers,
+All five evidence stories open `/review#transaction-evidence` and offer owner, two independent approvers,
 and restricted personas. They import fictional source documents through the normal
 authenticated ingestion path. Imported labels, balances and category hints grant no
 authority; reviews, attestations and approvals remain separate user actions.
@@ -399,7 +399,7 @@ The CLI performs governed writes only in the fictional budget it owns.
 For plural allocation, enter $4/$2 for the first receipt line across the $7/$5
 settlements, and $3/$3 for the second line. Assign Groceries to the first line
 and Household to the second. Each approver must explicitly review and save that
-same matrix on `/evidence` under their own persona before reviewing the owner's
+same matrix on `/review#transaction-evidence` under their own persona before reviewing the owner's
 proposal link. Allocation reviews are actor-scoped; switching personas never
 copies or silently attests another person's review. Return to the owner for
 execution after both approvals.

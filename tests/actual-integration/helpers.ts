@@ -23,6 +23,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { setImmediate } from 'node:timers/promises';
 
 // ---- Types ----------------------------------------------------------------
 
@@ -269,6 +270,8 @@ export async function seedFixtureData(fixture?: Record<string, unknown>): Promis
     fixture ?? loadFixtureData(),
   );
   await populateActualBudget(ledger);
+  // Observe sockets closed while synchronous SDK population occupied the event loop.
+  await setImmediate();
   await actualSync();
 }
 

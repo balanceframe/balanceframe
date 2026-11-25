@@ -37,6 +37,26 @@ run_child() {
   if (( status == 0 )); then ACTIVE_PID=""; fi
   return "$status"
 }
+stop_fixture() {
+  if [[ "$FIXTURE_STARTED" == 1 && -f "$ACTUAL_SERVER_DATA_DIR/.actual-server.pid" ]]; then
+    local pid
+    pid="$(cat "$ACTUAL_SERVER_DATA_DIR/.actual-server.pid")"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && [[ "$(ps -p "$pid" -o stat= 2>/dev/null)" != Z* ]]; then
+      # A PID alone is not authority: require our unique disposable data path.
+      if [[ -r "/proc/$pid/environ" ]] && tr '\0' '\n' <"/proc/$pid/environ" | grep -Fx "ACTUAL_DATA_DIR=$ACTUAL_SERVER_DATA_DIR" >/dev/null; then
+        kill "$pid" 2>/dev/null
+        for _ in {1..20}; do
+          kill -0 "$pid" 2>/dev/null || break
+          sleep 0.1
+        done
+        if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid"; fi
+      else
+        echo "Refusing to stop unverified fixture PID $pid; preserving $TEMP" >&2
+        return 1
+      fi
+    fi
+  fi
+}
 cleanup() {
   local status=$?
   trap - EXIT
@@ -53,25 +73,7 @@ cleanup() {
     wait "$ACTIVE_PID" 2>/dev/null
     ACTIVE_PID=""
   fi
-  if [[ "$FIXTURE_STARTED" == 1 && -f "$TEMP/actual/.actual-server.pid" ]]; then
-    local pid
-    pid="$(cat "$TEMP/actual/.actual-server.pid")"
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && [[ "$(ps -p "$pid" -o stat= 2>/dev/null)" != Z* ]]; then
-      # A PID alone is not authority: require our unique disposable data path.
-      if [[ -r "/proc/$pid/environ" ]] && tr '\0' '\n' <"/proc/$pid/environ" | grep -Fx "ACTUAL_DATA_DIR=$TEMP/actual" >/dev/null; then
-        kill "$pid" 2>/dev/null
-        for _ in {1..20}; do
-          kill -0 "$pid" 2>/dev/null || break
-          sleep 0.1
-        done
-        if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid"; fi
-      else
-        echo "Refusing to stop unverified fixture PID $pid; preserving $TEMP" >&2
-        TEMP=""
-        status=1
-      fi
-    fi
-  fi
+  if ! stop_fixture; then TEMP=""; status=1; fi
   if [[ "$ENV_OWNED" == 1 ]]; then
     if [[ "$ENV_SAVED" == 1 ]]; then
       if ! cp -p "$LOCK/env.test" "$ENV_FILE"; then
@@ -155,11 +157,14 @@ ACTUAL_SERVER_PORT="$(cat "$TEMP/port")"
 export ACTUAL_SERVER_URL="http://127.0.0.1:$ACTUAL_SERVER_PORT"
 export ACTUAL_BUDGET_NAME="BalanceFrame Coverage Fixture"
 export DRY_RUN=0
-FIXTURE_STARTED=1
-run_child bash tests/actual-integration/setup-fixture-server.sh
-set -a
-source "$ENV_FILE"
-set +a
+start_fixture() {
+  FIXTURE_STARTED=1
+  run_child bash tests/actual-integration/setup-fixture-server.sh
+  set -a
+  source "$ENV_FILE"
+  set +a
+}
+start_fixture
 
 # Mandatory serial execution includes native-backed contracts and live Actual.
 # JSON result reports let the checker reject empty/skipped/pending test runs.
@@ -168,7 +173,26 @@ while IFS=$'\t' read -r package report; do
   run_child node scripts/coverage/check.mjs --sources "$package" > "$TEMP/sources"
   coverage_args=()
   while IFS= read -r source; do coverage_args+=("--coverage.include=$source"); done < "$TEMP/sources"
-  run_child pnpm --filter "$package" exec vitest run --coverage "${coverage_args[@]}" --reporter=default --reporter=json --outputFile="$ROOT/coverage/$report/tests.json"
+  vitest=(pnpm --filter "$package" exec vitest)
+  report_mode=(run)
+  if [[ "$package" == @balanceframe/actual-integration ]]; then
+    # Isolate the production server's per-client rate window for each test file.
+    run_child "${vitest[@]}" list --filesOnly > "$TEMP/actual-files"
+    file_count=$(wc -l < "$TEMP/actual-files")
+    (( file_count > 0 )) || { echo 'No Actual test files discovered' >&2; exit 1; }
+    mkdir "$TEMP/blobs"
+    for (( shard=1; shard<=file_count; shard++ )); do
+      stop_fixture
+      ACTUAL_SERVER_DATA_DIR="$TEMP/actual-$shard"
+      unset ACTUAL_SECRET_KEY
+      start_fixture
+      blob="$TEMP/blobs/$shard.json"
+      run_child "${vitest[@]}" run "--shard=$shard/$file_count" --coverage "${coverage_args[@]}" --reporter=default --reporter=blob "--outputFile.blob=$blob"
+      test -s "$blob"
+    done
+    report_mode=("--mergeReports=$TEMP/blobs")
+  fi
+  run_child "${vitest[@]}" "${report_mode[@]}" --coverage "${coverage_args[@]}" --reporter=default --reporter=json --outputFile="$ROOT/coverage/$report/tests.json"
 done <"$TEMP/packages.tsv"
 
 # Assert real CLI behavior; inherited V8 coverage from its subprocesses replaces
