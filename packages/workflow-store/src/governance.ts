@@ -1,3 +1,5 @@
+import { CategorizationControls } from './categorization-controls.js';
+import type { CategorizationControlVersion, CategorizationDispatchAdmission } from './categorization-controls.js';
 import { randomUUID } from 'node:crypto';
 import type { Database, Statement } from 'better-sqlite3';
 import type {
@@ -625,7 +627,32 @@ export function migrateGovernance(db: Database): void {
 
 /** Shared-space authorization persistence and deterministic current-policy evaluator. */
 export class SpaceGovernance {
-  constructor(private readonly db: Database) {}
+  private readonly categorizationControls: CategorizationControls;
+  constructor(private readonly db: Database) { this.categorizationControls = new CategorizationControls(db); }
+
+  /** Lists control policy only; source amounts and admitted proposal IDs are not disclosed. */
+  listCategorizationControls(input: { spaceId: string; actorId: string; now: string }): CategorizationControlVersion[] {
+    this.requireManager(input.spaceId, input.actorId, 'delegation:manage', input.now, 'delegation:limits');
+    return this.categorizationControls.list(input.spaceId);
+  }
+  /** Saves a human-controlled categorization limit/stop version without changing grants or approvals. */
+  setCategorizationControls(input: { spaceId: string; agentId: string | null; expectedVersion: string | null; policy: unknown; auth: HumanControlContext; now: string }): CategorizationControlVersion {
+    return this.db.transaction(() => {
+      this.controlAuth(input.auth, input.auth.actorId, input.now);
+      this.requireManager(input.spaceId, input.auth.actorId, 'delegation:manage', input.now, 'delegation:limits');
+      const value = this.categorizationControls.set({ ...input, actorId: input.auth.actorId });
+      this.audit(input.spaceId, input.auth.actorId, 'categorization_controls_updated', input.agentId, input.now, { version: value.version });
+      return value;
+    }).immediate();
+  }
+  /** Internal preflight after trusted exact proposal authorization; no dispatch is admitted here. */
+  preflightCategorizationDispatch(input: CategorizationDispatchAdmission): void { this.categorizationControls.preflight(input); }
+  /** Internal final dispatch fence after current authorization and human quorum revalidation. */
+  admitCategorizationDispatch(input: CategorizationDispatchAdmission): void { this.categorizationControls.admit(input); }
+  /** Internal restore fence; human re-enablement still needs fresh normal control authority. */
+  quarantineCategorizationRestore(now: string): void { this.categorizationControls.quarantineRestore(now); }
+  /** Internal completion reached only after native postconditions and durable idempotency success. */
+  recordCategorizationVerified(idempotencyKey: string): void { this.categorizationControls.verified(idempotencyKey); }
 
   private readonly grantStatements = new Map<string, Statement>();
 
