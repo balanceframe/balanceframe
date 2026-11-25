@@ -76,6 +76,11 @@ function fixture(t, mode = 'exit') {
       scripts: { test: 'vitest run', coverage: 'vitest run --coverage' },
     }),
   );
+  if (mode.startsWith('actual-files')) {
+    put('tests/actual-integration/package.json', JSON.stringify({
+      name: '@balanceframe/actual-integration', scripts: { coverage: 'vitest run --coverage' },
+    }));
+  }
   put('crates/node-binding/balanceframe.node', 'owned fake build input');
   put('.gitignore', 'coverage/\n.coverage-run.lock/\n');
   put('config.json', JSON.stringify({ openId: { client_secret: 'fake-cwd-secret' } }));
@@ -125,6 +130,16 @@ if (process.argv.includes('napi')) {
 } else if (process.argv.includes('@balanceframe/native')) {
   fs.writeFileSync(process.env.BALANCEFRAME_COVERAGE_LOADS, process.pid + '\\n');
 } else if (process.argv.includes('vitest')) {
+  if (process.env.TEST_MODE.startsWith('actual-files')) {
+    const args = process.argv.slice(2);
+    if (!args.includes('@balanceframe/actual-integration')) process.exit(0);
+    if (args.includes('--filesOnly')) { console.log('one.test.ts\\ntwo.test.ts'); process.exit(0); }
+    const blob = args.find(arg => arg.startsWith('--outputFile.blob='));
+    if (blob) fs.writeFileSync(blob.slice('--outputFile.blob='.length), 'owned blob');
+    fs.appendFileSync('actual-runs.jsonl', JSON.stringify({ args, data: process.env.ACTUAL_SERVER_DATA_DIR }) + '\\n');
+    if (process.env.TEST_MODE === 'actual-files-fail' && blob) process.exit(19);
+    process.exit(blob ? 0 : 27);
+  }
   const names = ['BALANCEFRAME_CONFIG_PATH', 'BALANCEFRAME_WORKFLOW_DB_PATH', 'BALANCEFRAME_AUTH_DB_PATH', 'NUXT_AUTH_DB_PATH', 'NUXT_WORKFLOW_DB_PATH'];
   const paths = Object.fromEntries(names.map(name => [name, process.env[name]]));
   for (const target of Object.values(paths)) {
@@ -340,4 +355,32 @@ test('runs executable behavior assertions and inherits their subprocess entrypoi
   assert.ok(found > 0, report);
   assert.equal(hit, found, report);
   assert.equal(existsSync(join(f.root, '.coverage-run.lock')), false);
+});
+
+test('Actual coverage runs every shard on a fresh fixture and merges all results', async (t) => {
+  const f = fixture(t, 'actual-files');
+  const [code] = await f.exited;
+  assert.equal(code, 27, f.output());
+  const calls = readFileSync(join(f.root, 'actual-runs.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(calls.length, 3);
+  assert.notEqual(calls[0].data, calls[1].data);
+  for (const [i, call] of calls.slice(0, 2).entries()) {
+    assert.ok(call.args.includes(`--shard=${i + 1}/2`));
+    assert.ok(call.args.includes('--coverage'));
+    assert.ok(call.args.includes('--reporter=blob'));
+  }
+  assert.ok(calls[2].args.some(arg => arg.startsWith('--mergeReports=')));
+  assert.ok(calls[2].args.includes('--reporter=json'));
+  assert.ok(calls[2].args.includes('--coverage'));
+});
+
+test('a failed Actual shard stops coverage before any remaining shard or merge', async (t) => {
+  const f = fixture(t, 'actual-files-fail');
+  const [code] = await f.exited;
+  assert.equal(code, 19, f.output());
+  const call = JSON.parse(readFileSync(join(f.root, 'actual-runs.jsonl'), 'utf8'));
+  assert.ok(call.args.includes('--shard=1/2'));
+  assert.equal(running(JSON.parse(readFileSync(join(f.root, 'server-ready.json'), 'utf8')).pid), false);
+  assert.equal(readFileSync(join(f.root, 'tests/actual-integration/.env.test'), 'utf8'),
+    "ACTUAL_SECRET_KEY='prior-test-only-secret'\n");
 });
