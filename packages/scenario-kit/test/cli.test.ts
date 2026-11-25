@@ -107,6 +107,18 @@ async function runSourceCli(
 describe('root scenario commands', () => {
   afterEach(() => { vi.unstubAllEnvs(); });
 
+  it('pins the standalone fixture CLI to UTC before executing a command', async () => {
+    vi.stubEnv('TZ', 'America/Chicago');
+    const instant = '2026-11-14T04:30:00.000Z';
+    expect(new Date(instant).getDate()).toBe(13);
+    const result = await runSourceCli(['list']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('funded-purchase');
+    expect(result.childStatuses).toEqual([]);
+    expect(process.env.TZ).toBe('UTC');
+    expect(new Date(instant).getDate()).toBe(14);
+  });
+
   it('lists every checked feature without launching a workspace', () => {
     const result = spawnSync('pnpm', ['scenarios', 'list'], {
       cwd: repository,

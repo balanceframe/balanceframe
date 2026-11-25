@@ -504,3 +504,44 @@ Raw audit JSON, exact registry metadata, dependency constraints, source
 inspection and verification logs are retained in the saved environment under
 `/workspace/.setup/dependency-maintenance-evidence/`. Remote publication,
 merging and deployment are not authorized for this maintenance branch.
+
+## Approved maintenance — 2026-11-15
+
+The approved follow-up updates Forge to 1.4.3 and Nuxt/kit/schema to 4.6.4,
+with their required Nitro 2.13.6 and DevTools 3.4.4 owner closure. Upstream now
+contains the three previous Forge/Nitro/DevTools patch intents; their local
+patches are removed after behavioral and owner-resolution controls. The Actual
+SDK and Braces patches are unchanged.
+
+Two compatibility updates are deliberately scoped to the tested consumers:
+`js-beautify@2.0.3>glob` 14.0.6 and `fontless@0.2.1>esbuild` 0.28.2. These cross
+the owners' declared ranges. They are explicit compatibility decisions, not
+semver-satisfaction claims: the former exercises the shipped CLI interpreter,
+and the latter preserves five byte-exact CSS transform outputs through the
+actual fontless export. The retained strict owner-range test is supplemented
+by narrow contracts for these two exceptions. No new application abstraction
+or owner major upgrade is introduced.
+
+Deepmerge 4.3.1 has no published fixed release. Its backport rejects `__proto__`
+before either object-copy loop can assign it, across source/CJS/UMD, while
+preserving ordinary own keys, arrays, symbols and merge options. This follows
+the narrow proposal in [upstream PR 274](https://github.com/TehShrike/deepmerge/pull/274),
+which was closed unmerged; it is a locally maintained mitigation. It does not
+sanitize caller-owned references when `clone:false` intentionally retains them.
+
+The Minimatch 10.2.5 backport bounds level-two split rows and cumulative copied
+path cells before allocation, throwing a RangeError instead of returning a
+silently partial pattern set. It also skips optional pairwise deduplication
+when the row count or conservative segment-work estimate is large. Both
+executable formats and their embedded-source maps are regenerated with the
+existing compiler, after reproducing the originals byte-for-byte. These are
+structural work guards, not a universal character-count or CPU-time bound.
+The behavioral tests cover allocation limits, ordinary matches and the
+[reported preprocessing defect](https://github.com/advisories/GHSA-g3hv-75wg-m249).
+
+The fresh installed-graph audit reports **zero critical/high, one moderate and
+one low**. The remaining version findings are the locally patched Minimatch
+and Deepmerge releases. Audit suppression and CI treatment are unchanged;
+this is not a clean-audit claim. Regression-first results and final platform
+qualification belong to the accompanying maintenance PR; Mac tests cannot
+establish reproduction of the original Windows-specific esbuild disclosure.
