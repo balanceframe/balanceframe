@@ -93,14 +93,17 @@ export type DecisionExplanationProvider = Pick<
   'providerInfo' | 'explainDecisionCard'
 >;
 
-/** Bound provider work and discard results after any authority/source/policy change. */
-export async function runDecisionCardExplanation(
+/** Resolve the server policy before preparing financial facts or dispatching a request. */
+export function decisionExplanationAvailability(
   provider: DecisionExplanationProvider | undefined,
-  facts: unknown,
   getPolicy: () => unknown,
-  revalidate: () => void | Promise<void>,
-  admit?: () => boolean,
-): Promise<DecisionExplanationOutcome> {
+):
+  | Extract<DecisionExplanationOutcome, { status: 'manual' }>
+  | {
+      status: 'enabled';
+      provider: DecisionExplanationProvider;
+      policy: z.infer<typeof decisionExplanationPolicySchema>;
+    } {
   let policy;
   try {
     policy = decisionExplanationPolicySchema.safeParse(getPolicy());
@@ -122,9 +125,24 @@ export async function runDecisionCardExplanation(
     )
   )
     return { status: 'manual', code: 'disabled' };
+  return { status: 'enabled', provider, policy: policy.data };
+}
+
+/** Bound provider work and discard results after any authority/source/policy change. */
+export async function runDecisionCardExplanation(
+  provider: DecisionExplanationProvider | undefined,
+  facts: unknown,
+  getPolicy: () => unknown,
+  revalidate: () => void | Promise<void>,
+  admit?: () => boolean,
+): Promise<DecisionExplanationOutcome> {
+  const available = decisionExplanationAvailability(provider, getPolicy);
+  if (available.status === 'manual') return available;
+  const { policy } = available;
+  const info = available.provider.providerInfo;
   const input = decisionExplanationFactsSchema.safeParse(facts);
   if (!input.success) return { status: 'manual', code: 'unavailable' };
-  const originalPolicy = JSON.stringify(policy.data);
+  const originalPolicy = JSON.stringify(policy);
   const abort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let changed = false;
@@ -146,7 +164,7 @@ export async function runDecisionCardExplanation(
       (async (): Promise<DecisionExplanationOutcome> => {
         await guard();
         if (admit && !admit()) return { status: 'manual', code: 'rate_limited' };
-        const value = await provider.explainDecisionCard(input.data, abort.signal);
+        const value = await available.provider.explainDecisionCard(input.data, abort.signal);
         await guard();
         const parsed = decisionExplanationSelectionSchema.safeParse(value);
         if (
@@ -163,7 +181,7 @@ export async function runDecisionCardExplanation(
             provider: info.id,
             model: info.model!,
             promptVersion: DECISION_EXPLANATION_PROMPT,
-            policyRevision: policy.data.revision,
+            policyRevision: policy.revision,
           },
         };
       })(),
@@ -171,7 +189,7 @@ export async function runDecisionCardExplanation(
         timer = setTimeout(() => {
           abort.abort();
           resolve({ status: 'manual', code: 'timeout' });
-        }, policy.data.timeoutMs);
+        }, policy.timeoutMs);
       }),
     ]);
   } catch {

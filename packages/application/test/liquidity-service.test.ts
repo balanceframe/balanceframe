@@ -646,7 +646,7 @@ describe('authoritative application liquidity service', () => {
       provider,
       policy: () => ({ ...policy, mode: 'disabled' }),
     });
-    expect(fallback.card).toEqual(deterministic.card);
+    expect(fallback.card).toBeNull();
     expect(fallback.explanation).toMatchObject({ status: 'manual', code: 'disabled' });
     expect(providerFetch).not.toHaveBeenCalled();
     const before = structuredClone(current);

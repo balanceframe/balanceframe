@@ -79,12 +79,13 @@ describe('optional read-only Card explanation', () => {
   it('keeps the manual result usable when disabled, failed or malicious output is returned', async () => {
     request.mockResolvedValueOnce({
       status: 'ok',
-      result: { ...result, explanation: { status: 'manual', code: 'disabled' } },
+      result: { card: null, explanation: { status: 'manual', code: 'disabled' } },
     });
     const wrapper = mount(DecisionCardExplanation, options);
     await wrapper.get('button').trigger('click');
     await flushPromises();
-    expect(wrapper.text()).toContain('Use the deterministic Decision Card');
+    expect(wrapper.get('[role="status"]').text()).toContain('disabled');
+    expect(wrapper.emitted('card')).toBeUndefined();
     request.mockResolvedValueOnce({
       status: 'ok',
       result: {

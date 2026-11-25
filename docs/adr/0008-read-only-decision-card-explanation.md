@@ -107,8 +107,9 @@ configuration example, not a file format or a command to connect a provider.
 Never put these values in public Nuxt configuration or a browser/CLI request.
 Use `local_only` only for an operator-admitted local HTTPS deployment with
 `locality: local`; classification's locality is not inherited. Use `disabled`
-to withhold dispatch. Invalid/missing settings preserve deterministic evaluation
-and return an explicit manual explanation state. Deployment environment changes
+to withhold dispatch. When the configured provider is unavailable or disallowed,
+the optional explanation POST returns a manual state and a null card before
+opening Actual. The page retains the Decision Card from ordinary Purchase Check. Deployment environment changes
 take effect through the operator's normal process lifecycle; no policy-editing
 or secret-management UI is introduced.
 

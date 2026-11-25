@@ -19,7 +19,7 @@ describe('purchase explain CLI JSON parity', () => {
   ];
   it('sends only purchase intent to the ordinary authenticated selected-space endpoint', async () => {
     const result = {
-      card: { outcome: 'insufficient_data' },
+      card: null,
       explanation: { status: 'manual', code: 'disabled' },
     };
     const response = {

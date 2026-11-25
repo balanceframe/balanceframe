@@ -88,13 +88,18 @@ async function explain() {
   summary.value = null;
   error.value = false;
   try {
-    const result = await liquidityRequest<{ card: PublicDecisionCard; explanation: unknown }>(
+    const result = await liquidityRequest<{ card: PublicDecisionCard | null; explanation: unknown }>(
       '/api/purchase/explain',
       'POST',
       { ...props.intent },
     );
     if (ticket !== generation) return;
     const explanation = decisionCardExplanationViewSchema.parse(result.explanation);
+    if (result.card === null && explanation.status === 'manual') {
+      view.value = explanation;
+      return;
+    }
+    if (!result.card) throw new Error('Missing Decision Card');
     summary.value = decisionCardExplanationSummarySchema.parse(result.card);
     view.value = explanation;
     emit('card', result.card);

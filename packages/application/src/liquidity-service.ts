@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { runDecisionCardExplanation } from '@balanceframe/inference';
+import { decisionExplanationAvailability, runDecisionCardExplanation } from '@balanceframe/inference';
 import {
   decisionCardExplanationFacts,
   decisionCardExplanationSource,
@@ -770,7 +770,7 @@ export class LiquidityService {
     actor: LiquidityActor,
     value: unknown,
     runtime: DecisionCardExplanationRuntime,
-  ): Promise<{ card: PublicDecisionCard; explanation: DecisionCardExplanationView }> {
+  ): Promise<{ card: PublicDecisionCard | null; explanation: DecisionCardExplanationView }> {
     const intent = liquidityPurchaseInputSchema.parse(value);
     const authorize = async () => {
       await runtime.authorize?.();
@@ -782,6 +782,15 @@ export class LiquidityService {
       );
     };
     await authorize();
+    const available = decisionExplanationAvailability(runtime.provider, runtime.policy);
+    if (available.status === 'manual') {
+      this.authorizeIntent(
+        { ...actor, now: this.clock().toISOString() },
+        intent.categoryId,
+        intent.accountId,
+      );
+      return { card: null, explanation: available };
+    }
     const original = await this.capturePurchaseDecision(
       { ...actor, now: this.clock().toISOString() },
       intent,

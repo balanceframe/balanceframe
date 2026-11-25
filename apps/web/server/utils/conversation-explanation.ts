@@ -42,18 +42,6 @@ function currentPolicy(): unknown {
     return null;
   }
 }
-function configurationBinding(): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        process.env.BALANCEFRAME_CONVERSATION_POLICY,
-        process.env.BALANCEFRAME_CONVERSATION_PROVIDER,
-        process.env.BALANCEFRAME_CONVERSATION_API_KEY,
-      ]),
-    )
-    .digest('hex');
-}
-
 /** Compose only explicit server-owned conversation configuration; no provider is enabled by default. */
 export function createConversationExplanationRuntime(
   event: H3Event,
@@ -61,22 +49,18 @@ export function createConversationExplanationRuntime(
 ): DecisionCardExplanationRuntime {
   if (!event.node.req.headers.origin || !hasTrustedRequestOrigin(event as ReauthenticationEvent))
     throw new Error('Conversation request authorization denied');
-  const binding = configurationBinding();
+  const policyText = process.env.BALANCEFRAME_CONVERSATION_POLICY;
+  const providerText = process.env.BALANCEFRAME_CONVERSATION_PROVIDER;
+  const apiKey = process.env.BALANCEFRAME_CONVERSATION_API_KEY;
   let provider: OpenAIProvider | undefined;
   try {
     const policy = decisionExplanationPolicySchema.parse(currentPolicy());
-    if (
-      policy.mode !== 'disabled' &&
-      process.env.BALANCEFRAME_CONVERSATION_PROVIDER &&
-      process.env.BALANCEFRAME_CONVERSATION_API_KEY
-    ) {
-      const config = providerConfig.parse(
-        JSON.parse(process.env.BALANCEFRAME_CONVERSATION_PROVIDER),
-      );
+    if (policy.mode !== 'disabled' && providerText && apiKey) {
+      const config = providerConfig.parse(JSON.parse(providerText));
       provider = new OpenAIProvider({
         ...config,
         providerId: config.id,
-        apiKey: process.env.BALANCEFRAME_CONVERSATION_API_KEY,
+        apiKey,
       });
     }
   } catch {
@@ -93,7 +77,12 @@ export function createConversationExplanationRuntime(
           .digest('hex'),
       ),
     authorize: async () => {
-      if (configurationBinding() !== binding) throw new Error('Conversation configuration changed');
+      if (
+        process.env.BALANCEFRAME_CONVERSATION_POLICY !== policyText ||
+        process.env.BALANCEFRAME_CONVERSATION_PROVIDER !== providerText ||
+        process.env.BALANCEFRAME_CONVERSATION_API_KEY !== apiKey
+      )
+        throw new Error('Conversation configuration changed');
       const selected = requireSelectedSpace(event as unknown as EventWithContext);
       if (
         !selected.ok ||

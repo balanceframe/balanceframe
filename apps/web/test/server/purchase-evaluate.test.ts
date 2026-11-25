@@ -263,7 +263,17 @@ describe('POST /api/purchase/explain selected-space boundary', () => {
     expect(response.status).toBe('error');
     expect(mocks.loadConfig).not.toHaveBeenCalled();
   });
-  it('returns the ordinary insufficient-data Card with conversation disabled', async () => {
+  it.each([
+    [undefined, 'disabled'],
+    ['{"mode":"disabled","revision":"off","timeoutMs":1000,"allowedProviders":[]}', 'disabled'],
+    ['{', 'unavailable'],
+    ['{}', 'unavailable'],
+    [
+      '{"mode":"external_allowed","revision":"on","timeoutMs":1000,"allowedProviders":[]}',
+      'unavailable',
+    ],
+  ] as const)('keeps Actual closed for conversation policy %s', async (policy, code) => {
+    vi.stubEnv('BALANCEFRAME_CONVERSATION_POLICY', policy);
     for (const [capability, kind, id] of [
       ['affordability:evaluate', 'budget', budgetId],
       ['conclusion', 'budget', budgetId],
@@ -276,11 +286,19 @@ describe('POST /api/purchase/explain selected-space boundary', () => {
       status: 'ok',
       authorization: { actorId: ACTOR, capability: 'affordability:evaluate' },
       result: {
-        card: { outcome: 'insufficient_data', blockers: ['policy_unavailable'] },
-        explanation: { status: 'manual', code: 'disabled' },
+        card: null,
+        explanation: { status: 'manual', code },
       },
     });
+    expect(mocks.withConnection).not.toHaveBeenCalled();
+    expect(mocks.evaluateDecisionCard).not.toHaveBeenCalled();
     expect(JSON.stringify(response)).not.toContain('forged-legacy-actor');
+  });
+  it('still denies access to an ungranted category when conversation is disabled', async () => {
+    grant('affordability:evaluate', 'budget', budgetId);
+    const response = await explainHandler(explanationEvent());
+    expect(response).toMatchObject({ status: 'error', result: null });
+    expect(mocks.withConnection).not.toHaveBeenCalled();
   });
   it.each([
     { card: {} },
@@ -293,7 +311,15 @@ describe('POST /api/purchase/explain selected-space boundary', () => {
     expect(response).toMatchObject({ status: 'error', error: { code: 'INVALID_LIQUIDITY_INPUT' } });
     expect(mocks.withConnection).not.toHaveBeenCalled();
   });
-  it.each(['valid', 'source', 'connection', 'credential', 'policy'] as const)(
+  it.each([
+    'valid',
+    'source',
+    'connection',
+    'credential',
+    'policy',
+    'providerConfig',
+    'providerKey',
+  ] as const)(
     'runs the configured transport with normal public scope and rejects late %s changes',
     async (mode) => {
       for (const [capability, kind, id] of [
@@ -334,7 +360,10 @@ describe('POST /api/purchase/explain selected-space boundary', () => {
         if (mode === 'source')
           snapshot.legacySnapshot.accounts[0]!.name = 'changed synthetic source';
         if (mode === 'connection') connectionSource = 'changed-fixture-connection';
-      if (mode === 'credential') valid = false;
+        if (mode === 'credential') valid = false;
+        if (mode === 'providerKey')
+          process.env.BALANCEFRAME_CONVERSATION_API_KEY = 'rotated-test-only';
+        if (mode === 'providerConfig') process.env.BALANCEFRAME_CONVERSATION_PROVIDER = '{}';
         if (mode === 'policy')
           process.env.BALANCEFRAME_CONVERSATION_POLICY = JSON.stringify({
             ...policy,
