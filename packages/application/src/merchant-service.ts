@@ -26,7 +26,7 @@ export type MerchantActor = LiquidityActor & { auth: OperationalAuth; spaceId: s
 /** Native semantic analysis is read-only and never writes Actual. */
 export interface MerchantNativeBindings { analyzeMerchantIntelligence(input: string): string }
 /** Trusted application dependencies and source limits. */
-export interface MerchantServiceOptions { store: SqliteWorkflowStore; connectionManager: ConnectionManager; native: MerchantNativeBindings; clock?: () => Date; maxTransactions?: number; research?: { settings: () => MerchantResearchSettings; providerFor?: MerchantResearchHost['providerFor']; clock?: () => Date } }
+export interface MerchantServiceOptions { store: SqliteWorkflowStore; connectionManager: ConnectionManager; native: MerchantNativeBindings; clock?: () => Date; analysisDate?: string; maxTransactions?: number; research?: { settings: () => MerchantResearchSettings; providerFor?: MerchantResearchHost['providerFor']; clock?: () => Date } }
 /** Page selection is not source authority. */
 export interface MerchantAnalyzeInput { transactionIds?: string[]; cursor?: string | null; limit?: number; factsHash?: string }
 /** Authorized native source details, preserving availability without opaque import IDs or ledger flags. */
@@ -407,7 +407,7 @@ export class MerchantIntelligenceService {
       const policy = this.readPolicy(actor, entryScope);
       admission.evidence = { ...admission.evidence, hash: hash([admission.evidence.hash,policy.generation,policy.version]) };
       if(admission.payeeIds!==null)admission.payeeIds=uniq(this.decisions(actor,entryScope,admission).flatMap((decision)=>decision.payload.kind==='alias'?[decision.payload.targetPayeeId]:[]));
-      const date = this.now().slice(0,10); const start = new Date(`${date}T00:00:00Z`); start.setUTCFullYear(start.getUTCFullYear() - 5);
+      const date = this.options.analysisDate ?? this.now().slice(0,10); const start = new Date(`${date}T00:00:00Z`); start.setUTCFullYear(start.getUTCFullYear() - 5);
       return connector.captureMerchantSource({ expiresAt: new Date(Date.parse(this.now()) + 86400000).toISOString(), startDate: start.toISOString().slice(0,10), endDate: date, maxTransactions: this.maxTransactions, admission: { visibilityHash: admission.evidence.hash, accountIds: admission.accountIds, categoryIds: admission.categoryIds, transactionIds: admission.transactionIds, sourceTransactionIds: admission.sourceTransactionIds, sourceAccountIds:admission.sourceAccountIds, ruleIds: admission.ruleIds,payeeIds:admission.payeeIds,sourceScheduleIds:admission.sourceScheduleIds,schedulePayeeIds:admission.schedulePayeeIds } }, async (captured) => {
         const overrides = await this.options.store.getRuleOverrides({spaceId:actor.spaceId,budgetId:actor.budgetId});
         const annotations = captured.rules.flatMap((rule) => { const override = overrides.get(rule.id);return override ? [[rule.id,override.inactive,override.version]]:[]; });
