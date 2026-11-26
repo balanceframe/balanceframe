@@ -27,7 +27,7 @@ vi.mock('@balanceframe/application', async (original) => ({
   createDefaultConnectionManager: () => fixture.manager,
 }));
 import syncReview from '../../server/api/review/sync.post';
-import { composeScenarioResearch } from '../../server/utils/scenario-research';
+import { composeScenarioMerchantOptions, composeScenarioResearch } from '../../server/utils/scenario-research';
 import { getScenarioFixtureContext } from '../../server/utils/demo-boundary';
 
 interface Control {
@@ -121,6 +121,25 @@ beforeEach(async () => {
 afterEach(async () => { await fixture.cleanup(); vi.useRealTimers(); fetchSpy.mockRestore(); vi.unstubAllEnvs(); });
 
 describe('owned manifest-bound closed scenario research composition', () => {
+  it('pins only the analysis date of the selected scaled Review fixture', async () => {
+    vi.stubEnv('BALANCEFRAME_FIXTURE_MERCHANT_ANALYSIS_DATE', '2026-10-04');
+    const options = () => composeScenarioMerchantOptions(event, fixture.actor.spaceId);
+    expect(options()).not.toHaveProperty('analysisDate');
+    saveManifest({ scenarioId: 'merchant-local-sparse', research: undefined });
+    expect(composeScenarioMerchantOptions(event, 'foreign-space')).not.toHaveProperty('analysisDate');
+    expect(options()).toHaveProperty('analysisDate', '2026-10-04');
+    const owned = new MerchantIntelligenceService({ store: fixture.store, connectionManager: fixture.manager,
+      native, clock: () => new Date(fixture.clock()), ...options() });
+    for (const time of ['2026-10-04T23:59:59.999Z', '2026-10-05T00:00:00.000Z']) {
+      fixture.setClock(time);
+      const capture = await owned.analyze(fixture.actor);
+      expect(capture.asOfDate).toBe('2026-10-04');
+      expect(Date.parse(capture.sourceAdmission.expiresAt)).toBe(Date.parse(time) + 86_400_000);
+    }
+    delete event.context.runtimeConfig.demoManifestPath;
+    expect(options()).not.toHaveProperty('analysisDate');
+  });
+
   it('leaves genuinely ordinary production composition unchanged without a configured manifest path', async () => {
     delete event.context.runtimeConfig.demoManifestPath;
     expect(getScenarioFixtureContext(event)).toEqual({ active: false });

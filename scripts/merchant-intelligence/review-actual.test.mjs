@@ -43,7 +43,17 @@ test('publishes 50k imported source rows and settles first and repeated authenti
       })}`);
       assert.equal(dataset.firstPopulation.sourceCount, 50000);
       assert.equal(dataset.completedWarmups, 1);
-      assert.equal(dataset.completedSamples, 1);
+      const sample = dataset.samples[0];
+      assert.equal(dataset.completedSamples, 1, `measured Sync failed: ${JSON.stringify({
+        failureCode: dataset.failureCode,
+        attemptedSamples: dataset.attemptedSamples,
+        status: sample?.status,
+        censored: sample?.censored,
+        uiSettled: sample?.uiSettled,
+        sourceQueueStable: sample?.sourceQueueStable,
+        httpStatusCounts: sample?.httpStatusCounts,
+        pageErrorCodes: sample?.pageErrorCodes,
+      })}`);
       assert.equal(dataset.queue.stable, true);
       assert.equal(dataset.p95ElapsedMs, null);
       assert.equal(statSync(output).mode & 0o777, 0o600);

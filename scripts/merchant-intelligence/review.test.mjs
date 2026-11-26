@@ -741,7 +741,7 @@ test('strict reports retain specific safe Sync failures and reject arbitrary dia
   report.datasets[0].status = 'failed';
   report.datasets[0].referenceStatus = 'unproven';
   report.datasets[0].p95ElapsedMs = null;
-  for (const code of ['review_sync_control_unavailable', 'review_sync_http_or_envelope_failed',
+  for (const code of ['analysis_date_changed', 'review_sync_control_unavailable', 'review_sync_http_or_envelope_failed',
     'review_sync_partial_transition', 'review_sync_already_active']) {
     report.datasets[0].failureCode = code;
     assert.equal(JSON.parse(serializeArtifact(report)).datasets[0].failureCode, code);

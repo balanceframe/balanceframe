@@ -10,7 +10,7 @@ import { requireSelectedSpace } from './space-context';
 import { selectedLiquidityActor } from './liquidity-service';
 import { getHumanControlAuth, hasTrustedRequestOrigin } from './reauthentication';
 import { errorEnvelope, getWorkflowStore, okEnvelope, requireAuthorization } from './workflow-store';
-import { composeScenarioResearch } from './scenario-research';
+import { composeScenarioMerchantOptions } from './scenario-research';
 
 const queryId = z.string().min(1).max(512);
 /** Query fields select evidence; none confer source or management authority. */
@@ -80,8 +80,7 @@ export function merchantRoute<T>(
       }
       if (!options.query) z.object({}).strict().parse(getQuery(event));
       const connectionManager = createDefaultConnectionManager({ configPath: process.env.BALANCEFRAME_CONFIG_PATH });
-      const research = composeScenarioResearch(event, selected.space.id);
-      const service = await createMerchantIntelligenceService({ store: workflow.store, connectionManager, ...(research ? { research } : {}) });
+      const service = await createMerchantIntelligenceService({ store: workflow.store, connectionManager, ...composeScenarioMerchantOptions(event, selected.space.id) });
       const result = await operation(event, service, trusted);
       return okEnvelope(result, authInfo, requestId);
     } catch (error) {

@@ -83,6 +83,7 @@ type ActualApi = {
   setBudgetAmount(month: string, categoryId: string, amount: number): Promise<unknown>;
   setBudgetCarryover?(month: string, categoryId: string, carriesOver: boolean): Promise<unknown>;
   getBudgetMonth(month: string): Promise<unknown>;
+  getBudgetMonths(): Promise<string[]>;
 };
 
 const actualApi = actualApiModule as unknown as ActualApi;
@@ -907,21 +908,6 @@ async function populatePrepared(ledger: PreparedLedger): Promise<SeededEntityIds
     );
   }
 
-  for (const budget of [...snapshot.budgets].sort((a, b) => a.month.localeCompare(b.month))) {
-    for (const categoryBudget of Object.values(budget.categories)) {
-      const categoryId = categoryIds[categoryBudget.categoryId]!;
-      const amount = Number(BigInt(categoryBudget.amount.minorUnits));
-      await actualApi.setBudgetAmount(budget.month, categoryId, amount);
-      if (categoryBudget.carriesOver) {
-        const setCarryover = actualApi.setBudgetCarryover;
-        if (!setCarryover) {
-          fail('Actual does not publish setBudgetCarryover for carriesOver budget categories');
-        }
-        await setCarryover(budget.month, categoryId, true);
-      }
-    }
-  }
-
   const operations: TransactionOperation[] = [];
   for (const transaction of snapshot.transactions) {
     const accountId = accountRef(
@@ -1096,6 +1082,23 @@ async function populatePrepared(ledger: PreparedLedger): Promise<SeededEntityIds
       const completeFields: ActualRow = { ...nativeRow, ...fields };
       delete completeFields.accountId;
       await actualApi.updateTransaction(actualId, completeFields);
+    }
+  }
+
+  // Actual initializes historical budget cells lazily when its month bounds are read.
+  await actualApi.getBudgetMonths();
+  for (const budget of [...snapshot.budgets].sort((a, b) => a.month.localeCompare(b.month))) {
+    for (const categoryBudget of Object.values(budget.categories)) {
+      const categoryId = categoryIds[categoryBudget.categoryId]!;
+      const amount = Number(BigInt(categoryBudget.amount.minorUnits));
+      await actualApi.setBudgetAmount(budget.month, categoryId, amount);
+      if (categoryBudget.carriesOver) {
+        const setCarryover = actualApi.setBudgetCarryover;
+        if (!setCarryover) {
+          fail('Actual does not publish setBudgetCarryover for carriesOver budget categories');
+        }
+        await setCarryover(budget.month, categoryId, true);
+      }
     }
   }
 

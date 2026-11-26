@@ -153,6 +153,8 @@ async function run(): Promise<void> {
   );
 }
 
+process.env.TZ = 'UTC';
+
 try {
   await run();
 } catch (failure) {

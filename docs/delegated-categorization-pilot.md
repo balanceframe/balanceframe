@@ -51,7 +51,7 @@ Run against the canonical disposable fixture using the owning package's setup,
 then explicitly preserve its production execution mode:
 
 ```sh
-pnpm --filter @balanceframe/actual-integration setup
+pnpm --filter @balanceframe/actual-integration run setup
 NODE_ENV=production BALANCEFRAME_ACTUAL_FIXTURE=1 \
   pnpm --filter @balanceframe/actual-integration exec vitest run 13-delegated-categorization.test.ts
 ```
