@@ -203,3 +203,18 @@ Deletion requires a verified export for the same scope. Disconnect preserves the
 selection; remove-connection removes only the selected connection configuration.
 Neither operation disconnects an unrelated budget's active connection. Data deletion
 does not erase retained historical identity, approval, or governance audit attribution.
+## Categorization preview
+
+`balanceframe proposals preview PROPOSAL_ID --json` uses the selected server
+space and current human identity. It synchronizes Actual source data, then
+computes a private categorization preview over detached local observations.
+Synchronization may upload pending changes or archives, migrate, or post configured
+scheduled transactions. The preview does not submit the proposed categorization,
+consume human approvals, claim execution, spend delegated allowance or settle an
+uncertain dispatch. It requires unrestricted budget source-read authority as well
+as the exact proposal read and execution-preflight permissions.
+
+Results include the observation interval and explicitly do not claim atomic or
+server-confirmed state. Execute remains a separate request with fresh checks and
+independent human approval. Do not automatically retry blocked source or uncertain
+execution results. No Actual credentials are sent by this CLI transport.

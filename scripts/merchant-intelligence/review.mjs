@@ -81,7 +81,7 @@ const NATIVE_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024;
 const MEMORY_SCOPE = 'owned Actual and web entry processes only; prepared-state baseline through first population, warmups, and repeated Sync; excludes descendants, browser, and host';
 const FAILURE_CODES = new Set([
   'dataset_deadline_exceeded', 'deadline_exceeded', 'scenario_setup_failed', 'identity_unverified',
-  'source_admission_unproven', 'source_below_requested_size', 'actual_import_unproven', 'source_grant_unavailable',
+  'analysis_date_changed', 'source_admission_unproven', 'source_below_requested_size', 'actual_import_unproven', 'source_grant_unavailable',
   'source_queue_invariant_failed', 'review_page_failed', 'review_sync_failed', 'review_ui_unproven',
   'review_sync_control_unavailable', 'review_sync_http_or_envelope_failed',
   'review_sync_partial_transition', 'review_sync_already_active',
@@ -1135,7 +1135,7 @@ async function runDatasetBody(options, size, signal, deadlineExpired, datasetDea
     checkDeadline();
     const scenario = materializeScenario(SCENARIO_ID, SCENARIO_ANCHOR);
     root = createOwnedScenarioRoot();
-    processes = await startScenarioShell({ root, webEntry: builtWebEntry(), scenarioId: SCENARIO_ID });
+    processes = await startScenarioShell({ root, webEntry: builtWebEntry(), scenarioId: SCENARIO_ID, merchantAnalysisDate: SCENARIO_DATE });
     checkDeadline();
     loaded = await initializeScenarioShell(processes, scenario, signal);
     checkDeadline();
@@ -1159,7 +1159,7 @@ async function runDatasetBody(options, size, signal, deadlineExpired, datasetDea
     const baseEnvelope = requireEnvelope(await appHttp.get('/api/merchant'));
     checkDeadline();
     const baseAdmission = sourceAdmission(baseEnvelope);
-    if (!baseAdmission.collectionsComplete || baseAdmission.truncatedCount !== 0) throw new Error('source_admission_unproven');
+    if (baseAdmission.asOfDate !== SCENARIO_DATE || !baseAdmission.collectionsComplete || baseAdmission.truncatedCount !== 0) throw new Error('source_admission_unproven');
     if (baseAdmission.sourceCount >= size) throw new Error('source_below_requested_size');
     dataset.source.baselineCount = baseAdmission.sourceCount;
     dataset.source.appendHeadroom = size - baseAdmission.sourceCount;
@@ -1419,13 +1419,13 @@ async function runDatasetBody(options, size, signal, deadlineExpired, datasetDea
       const currentEnvelope = requireEnvelope(await appHttp.get('/api/merchant'));
       checkDeadline();
       const current = sourceAdmission(currentEnvelope);
+      if (current.asOfDate !== sourceAdmissionResult.asOfDate) throw new Error('analysis_date_changed');
       if (currentEnvelope.scope?.spaceId !== loaded.initialized.spaceId ||
         currentEnvelope.scope?.budgetId !== loaded.seeded.budgetId ||
         current.sourceCount !== sourceAdmissionResult.sourceCount ||
         current.originalSourceCount !== sourceAdmissionResult.originalSourceCount ||
         current.retainedCount !== sourceAdmissionResult.retainedCount || current.truncatedCount !== 0 ||
         current.eligibleCount !== sourceAdmissionResult.eligibleCount || !current.collectionsComplete ||
-        current.asOfDate !== sourceAdmissionResult.asOfDate ||
         current.captureStartDate !== sourceAdmissionResult.captureStartDate ||
         current.captureEndDate !== sourceAdmissionResult.captureEndDate ||
         current.analysisStartDate !== sourceAdmissionResult.analysisStartDate ||

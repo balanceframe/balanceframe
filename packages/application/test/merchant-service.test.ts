@@ -594,6 +594,20 @@ describe('human evidence decisions remain distinct from ledger mutation', () => 
     expect(rejected).toMatchObject({ state: 'rejected', version: 2 });
     for (const write of [fixture.client.updateTransaction, fixture.client.addTransactions, fixture.client.createRule, fixture.client.deleteRule, fixture.client.setBudgetAmount]) expect(write).not.toHaveBeenCalled();
   });
+  it('rejects the previous UTC day’s evidence for the same rows with fresh human authority', async () => {
+    const before = '2026-10-04T23:59:59.999Z';
+    const after = '2026-10-05T00:00:00.000Z';
+    fixture.setClock(before);
+    const prior = await suggestion();
+    fixture.setClock(after);
+    const actor = { ...fixture.actor, auth: humanAuth(fixture.actor.actorId, after) };
+    const next = await fixture.service.analyze(actor);
+    expect(next.asOfDate).toBe('2026-10-05');
+    const fresh = next.suggestions.find(item => item.transactionId === candidateId)!;
+    expect(fresh.evidenceRevision).not.toBe(prior.evidenceRevision);
+    await expect(fixture.service.confirm(actor, alias(prior))).rejects.toThrow(/no longer current/);
+    expect((await fixture.service.confirm(actor, alias(fresh))).state).toBe('accepted');
+  });
   it('rejects stale evidence even when the optimistic decision version is otherwise current', async () => {
     const value = await suggestion();
     fixture.setRows(fixture.rows().map((row) => row.id === candidateId ? { ...row, notes: 'CHANGED-EVIDENCE' } : row));

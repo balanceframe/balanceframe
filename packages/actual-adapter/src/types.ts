@@ -44,7 +44,7 @@ export interface ActualMerchantSourceCapture {
 
 /**
  * The access mode governing what BalanceFrame may do with a connected Actual budget.
- * - **Observe** (default): read-only; never modifies Actual.
+ * - **Observe** (default): rejects explicit application mutations; the SDK lifecycle can synchronize changes.
  * - **ReviewAndApply** (Phase 4): explicit approved writes only.
  * - **ManagedAutomation** (post-MVP): configured low-risk deterministic actions.
  * - **DisposableSandbox**: isolated budget for safe mutation testing.
@@ -52,7 +52,7 @@ export interface ActualMerchantSourceCapture {
 export type ConnectionMode =
   'observe' | 'reviewAndApply' | 'managedAutomation' | 'disposableSandbox';
 
-/** Default mode for Phase 1 — no writes permitted. */
+/** Default mode for Phase 1 — explicit application mutations are rejected. */
 export const DEFAULT_MODE: ConnectionMode = 'observe';
 
 // ---------------------------------------------------------------------------

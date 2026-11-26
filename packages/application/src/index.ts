@@ -10,6 +10,7 @@ export * from './envelope.js';
 export * from './errors.js';
 export * from './commands.js';
 export * from './mutation.js';
+export * from './categorization-preview.js';
 export * from './rule-mutation.js';
 export * from './analysis.js';
 export * from './composition.js';

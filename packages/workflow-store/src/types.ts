@@ -1291,6 +1291,8 @@ export interface WorkflowStore {
 
   /** Atomically authorize and acquire a generic proposal write intent with its complete approval set. */
   acquireProposalExecution(input: AcquireProposalExecutionInput): Promise<ProposalExecutionAcquisition>;
+  /** Read-only exact categorization preflight; never reserves allowance or consumes approvals. */
+  previewCategorizationExecution(input: AcquireProposalExecutionInput): CategorizationExecutionPreview;
 
   /** Synchronous exact authority fence; call immediately before every SDK mutation. */
   validateAcquiredProposalExecution(input: ValidateAcquiredProposalExecutionInput): void;
@@ -2269,6 +2271,15 @@ export interface FinalizeConsequentialActionExecutionInput extends Consequential
     | { readonly kind: 'verified'; readonly verificationToken: ConsequentialActionVerificationToken }
     | { readonly kind: 'review_required'; readonly reason: string; readonly observedState?: unknown }
     | { readonly kind: 'invalidated_no_dispatch'; readonly invalidationToken: ConsequentialActionInvalidationToken };
+}
+
+/** Server-internal current preflight binding; context hash is never execution authority. */
+export interface CategorizationExecutionPreview {
+  readonly simulationOnly: true;
+  readonly status: 'would_execute' | 'approval_required';
+  readonly requiredApprovers: number;
+  readonly approvalIds: readonly string[];
+  readonly contextHash: string;
 }
 
 /** Atomic authorization, idempotency claim, approval consumption and audit result. */
