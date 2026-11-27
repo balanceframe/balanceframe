@@ -65,6 +65,7 @@ const globalMountOptions = {
     },
     LiquidityResult: true,
     TransferPlanReview: true,
+    DecisionCardExplanation: true,
   },
 };
 
@@ -460,6 +461,49 @@ describe('Purchase Check Decision Card contract', () => {
     expect(actionRequest?.body).not.toHaveProperty('plan');
     expect(actionRequest?.body).not.toHaveProperty('payloadHash');
     expect(navigateTo).toHaveBeenCalledWith('/proposals/proposal-action');
+  });
+
+  it('adopts a fresh explained Card while invalidating old proposal and transfer readiness', async () => {
+    const wrapper = await mountAndEvaluate(safeReallocationCard(), { accountId: 'checking' });
+    expect(wrapper.get('[data-testid="propose-action"]').attributes('disabled')).toBeUndefined();
+    const explained = { ...safeReallocationCard(), expiresAt: '2026-09-06T10:09:00.000Z' };
+    wrapper.findComponent({ name: 'DecisionCardExplanation' }).vm.$emit('card', explained);
+    await flushPromises();
+    expect(wrapper.get('[data-testid="card-expiry"]').text()).toContain('10:09');
+    expect(wrapper.get('[data-testid="propose-action"]').attributes('disabled')).toBeDefined();
+    await wrapper.get('[data-testid="propose-action"]').trigger('click');
+    expect(mockFetch.mock.calls.some(([url]) => url === '/api/proposal/action')).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('does not restore an older pending transfer preview after adopting a fresh explained Card', async () => {
+    const wrapper = await mountAndEvaluate(safeAfterDateCard(), { accountId: 'checking' });
+    let finish: ((value: TestEnvelope) => void) | undefined;
+    mockFetch.mockImplementation((url: string) => url === '/api/transfer/preview'
+      ? new Promise<TestEnvelope>((resolve) => { finish = resolve; }) : Promise.resolve(okEnvelope({})));
+    await wrapper.get('[data-testid="plan-transfer"]').trigger('click');
+    expect(wrapper.text()).toContain('Preparing read-only transfer review');
+    wrapper.findComponent({ name: 'DecisionCardExplanation' }).vm.$emit('card', { ...safeAfterDateCard(), expiresAt: '2026-09-06T10:09:00.000Z' });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('Preparing read-only transfer review');
+    finish?.(okEnvelope({ previewId: 'old-preview' }));
+    await flushPromises();
+    expect(wrapper.find('transfer-plan-review-stub').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('does not navigate to an older proposal result after a fresh explained Card invalidates its context', async () => {
+    const wrapper = await mountAndEvaluate(safeReallocationCard(), { accountId: 'checking' });
+    let finish: ((value: TestEnvelope) => void) | undefined;
+    mockFetch.mockImplementation((url: string) => url === '/api/proposal/action'
+      ? new Promise<TestEnvelope>((resolve) => { finish = resolve; }) : Promise.resolve(okEnvelope({})));
+    await wrapper.get('[data-testid="propose-action"]').trigger('click');
+    wrapper.findComponent({ name: 'DecisionCardExplanation' }).vm.$emit('card', { ...safeReallocationCard(), expiresAt: '2026-09-06T10:09:00.000Z' });
+    finish?.(okEnvelope({ proposal: { id: 'old-proposal' } }));
+    await flushPromises();
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(wrapper.get('[data-testid="propose-action"]').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
   });
 
   it('removes the prior Propose path when purchase inputs invalidate their evaluated Card', async () => {

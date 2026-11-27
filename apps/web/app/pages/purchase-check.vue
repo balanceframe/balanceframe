@@ -135,6 +135,11 @@
         @plan-transfer="previewTransfer"
         @propose="proposeAction"
       />
+      <DecisionCardExplanation
+        v-if="card && explanationIntent"
+        :intent="explanationIntent"
+        @card="adoptExplainedCard"
+      />
       <p v-if="proposalError" role="alert" class="my-3 text-red-600">{{ proposalError }}</p>
       <p v-if="transferError" role="alert" class="my-3 text-red-600">{{ transferError }}</p>
       <p v-if="transferLoading" role="status">Preparing read-only transfer review…</p>
@@ -154,6 +159,8 @@ import { onBeforeUnmount, onMounted } from 'vue';
 import type { ConsequentialActionIntent } from '@balanceframe/protocol-generated';
 import type { PublicDecisionCard, PublicLiquidityView, PublicTransferPreview } from '@balanceframe/application';
 import DecisionCardView from '../components/DecisionCardView.vue';
+import DecisionCardExplanation from '../components/DecisionCardExplanation.vue';
+import type { LiquidityPurchaseIntent } from '@balanceframe/application';
 import { liquidityRequest, liquidityError } from '../utils/liquidity-client';
 
 interface DemoState {
@@ -236,6 +243,7 @@ const amountStr = ref('');
 const currency = ref('USD');
 const accountId = ref('');
 const card = ref<PublicDecisionCard | null>(null);
+const explanationIntent = ref<LiquidityPurchaseIntent | null>(null);
 const catalog = ref<PublicLiquidityView | null>(null);
 const catalogLoading = ref(true);
 const catalogError = ref('');
@@ -276,6 +284,7 @@ watch(
     transferLoading.value = false;
     error.value = null;
     card.value = null;
+    explanationIntent.value = null;
     evaluatedDecision.value = null;
     transferPreview.value = null;
     transferError.value = '';
@@ -470,6 +479,7 @@ async function evaluate() {
   loading.value = true;
   error.value = null;
   card.value = null;
+  explanationIntent.value = null;
   evaluatedDecision.value = null;
   transferPreview.value = null;
   try {
@@ -510,6 +520,14 @@ async function evaluate() {
     } else {
       const evaluatedCard = response.result.card;
       card.value = evaluatedCard;
+      explanationIntent.value = {
+        kind: 'purchase',
+        categoryId: snapshot.categoryId,
+        amount: snapshot.amount,
+        ...(snapshot.accountId ? { accountId: snapshot.accountId } : {}),
+        purchaseAt: snapshot.purchaseAt,
+        requiredBy: snapshot.requiredBy,
+      };
       evaluatedDecision.value = evaluatedCard.expiresAt
         ? {
             accountId: snapshot.accountId,
@@ -536,22 +554,35 @@ async function evaluate() {
   }
 }
 
+function adoptExplainedCard(current: PublicDecisionCard) {
+  evaluationRevision++;
+  card.value = current;
+  evaluatedDecision.value = null;
+  transferPreview.value = null;
+  transferLoading.value = false;
+  transferError.value = '';
+  proposalBusy.value = false;
+  proposalError.value = '';
+}
+
 async function proposeAction(action: Extract<ConsequentialActionIntent, { kind: 'reallocation' }>) {
   const decision = evaluatedDecision.value;
   if (!decision || proposalBusy.value) return;
   proposalBusy.value = true;
   proposalError.value = '';
+  const revision = evaluationRevision;
   try {
     const result = await liquidityRequest<{ proposal: { id: string } }>(
       '/api/proposal/action',
       'POST',
       { action, decision },
     );
-    await navigateTo(`/proposals/${encodeURIComponent(result.proposal.id)}`);
+    if (revision === evaluationRevision)
+      await navigateTo(`/proposals/${encodeURIComponent(result.proposal.id)}`);
   } catch (cause) {
-    proposalError.value = liquidityError(cause);
+    if (revision === evaluationRevision) proposalError.value = liquidityError(cause);
   } finally {
-    proposalBusy.value = false;
+    if (revision === evaluationRevision) proposalBusy.value = false;
   }
 }
 </script>
