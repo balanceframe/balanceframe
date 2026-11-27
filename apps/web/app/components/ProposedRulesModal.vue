@@ -97,7 +97,7 @@
                 <details @toggle="impactJsonOpen[entry.proposal.id] = ($event.currentTarget as HTMLDetailsElement).open"><summary class="cursor-pointer font-medium">Exact complete reviewed simulation JSON</summary><pre v-if="impactJsonOpen[entry.proposal.id]" aria-label="Complete reviewed rule simulation" class="overflow-x-auto text-xs">{{ JSON.stringify(entry.nativeImpact, null, 2) }}</pre></details>
               </template>
               <p v-else role="alert">Reviewed simulation unavailable. Refresh the proposal before approval or execution.</p>
-              <p class="text-sm">Creating, exporting or approving this proposal does not write to Actual. Execution is a separate governed action; changed source facts require a new review and approval.</p>
+              <p class="text-sm">Creating, exporting or approving this proposal does not submit this proposed rule. Source synchronization can upload pending changes or post configured schedules. Execution is a separate governed action; changed source facts require a new review and approval.</p>
             </section>
             <div v-if="entry.proposal.privateEnvelopeVisible">
               <h5 class="text-sm font-medium">Exact persisted payload</h5>
@@ -111,6 +111,14 @@
             <p v-if="entry.stale" role="status" class="text-sm text-amber-700">This proposal is stale. Refresh its exact view before retrying approval or execution.</p>
             <p v-if="entry.simulationStatus" class="text-sm text-gray-500">Simulation: {{ entry.simulationStatus }}</p>
             <pre v-if="entry.simulation !== null" class="overflow-x-auto rounded bg-gray-50 p-2 text-xs dark:bg-gray-950">{{ JSON.stringify(entry.simulation, null, 2) }}</pre>
+
+            <CategorizationPreview
+              v-if="entry.proposal.operation === 'set_category' && entry.proposal.privateEnvelopeVisible"
+              :proposal-id="entry.proposal.id"
+              :payload-hash="entry.proposal.payloadHash"
+              :active="open"
+              :disabled="busy || entry.stale"
+            />
 
             <div class="flex flex-wrap gap-2">
               <UButton
@@ -223,6 +231,7 @@
 import { computed, onScopeDispose, ref, watch } from 'vue';
 import { z } from 'zod';
 import SemanticAmount from './SemanticAmount.vue';
+import CategorizationPreview from './CategorizationPreview.vue';
 import type { RuleSimulationResult } from '@balanceframe/application';
 import { reauthenticateHuman } from '../utils/reauthentication';
 import { isProposalApprovalView } from '../../types/review-client';

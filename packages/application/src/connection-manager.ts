@@ -58,6 +58,8 @@ export interface ConnectedBudget {
 }
 
 export interface ConnectionUseOptions {
+  /** Recheck source admission inside the lifecycle lock, before any SDK cleanup or connection. */
+  readonly assertCurrent?: () => void | Promise<void>;
   /** Disconnect and discard the connector after the scoped operation, including on failure. */
   readonly dispose?: boolean;
   /** Selected budget authorized before waiting for the global lifecycle lock. */
@@ -221,8 +223,9 @@ export class ConnectionManager {
     options: ConnectionUseOptions = {},
   ): Promise<T> {
     return this.runWithLifecycle(async () => {
-      const connected = await this.restoreConfiguredBudget(options.expectedBudgetId, options.synchronize ?? true);
+      const connected = await this.restoreConfiguredBudget(options.expectedBudgetId, options.synchronize ?? true, options.assertCurrent);
       try {
+        await options.assertCurrent?.();
         return await operation(connected);
       } finally {
         if (options.dispose) {
@@ -233,7 +236,7 @@ export class ConnectionManager {
           }
         }
       }
-    }, options.expectedBudgetId);
+    }, options.expectedBudgetId, options.assertCurrent);
   }
 
   /** Disconnect without changing the selected-budget configuration. */
@@ -259,8 +262,9 @@ export class ConnectionManager {
     });
   }
 
-  private async restoreConfiguredBudget(expectedBudgetId?: string, synchronize = true): Promise<ConnectedBudget> {
+  private async restoreConfiguredBudget(expectedBudgetId?: string, synchronize = true, assertCurrent?: () => void | Promise<void>): Promise<ConnectedBudget> {
     const config = await this.loadConfig();
+    await assertCurrent?.();
     if (!config) {
       await this.disconnectConnected();
       throw new ApplicationError({
@@ -273,6 +277,7 @@ export class ConnectionManager {
     if (expectedBudgetId !== undefined && config.budgetId !== expectedBudgetId)
       throw new Error('Selected budget changed');
     const credentials = await this.credentialStore.load();
+    await assertCurrent?.();
     if (!credentials) {
       await this.disconnectConnected();
       throw new Error('No Actual credentials configured.');
@@ -309,12 +314,16 @@ export class ConnectionManager {
     }
 
     await this.disconnectConnected();
+    await assertCurrent?.();
     actualLifecycleState.owner = this;
     let connector: Connector | null = null;
     try {
       connector = await this.connectorFactory(credentials);
+      await assertCurrent?.();
       await connector.connect(credentials);
+      await assertCurrent?.();
       const budget = await connector.selectBudget(config.budgetId, credentials.budgetPassword);
+      await assertCurrent?.();
       const synchronization = synchronize ? await connector.synchronize({ refresh: false }) : null;
       const connected = { budget, config, connector, synchronization };
       this.connectedBudget = connected;
@@ -356,6 +365,7 @@ export class ConnectionManager {
   private async runWithLifecycle<T>(
     operation: () => Promise<T>,
     expectedBudgetId?: string,
+    assertCurrent?: () => void | Promise<void>,
   ): Promise<T> {
     return runActualLifecycleExclusive(async () => {
       if (expectedBudgetId !== undefined) {
@@ -363,6 +373,7 @@ export class ConnectionManager {
         if (!config || config.budgetId !== expectedBudgetId)
           throw new Error('Selected budget changed');
       }
+      await assertCurrent?.();
       const owner = actualLifecycleState.owner;
       if (owner && (owner !== this || owner.quarantinedConnector)) {
         await owner.disconnectConnected();

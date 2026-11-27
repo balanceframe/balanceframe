@@ -625,6 +625,7 @@ export async function startScenarioShell(options: {
   readonly root: string;
   readonly publicOrigin?: string;
   readonly webEntry: string;
+  readonly merchantAnalysisDate?: string;
   readonly demoMode?: boolean;
   readonly generation?: number;
   readonly scenarioId?: ScenarioId;
@@ -668,7 +669,7 @@ export async function startScenarioShell(options: {
     process.execPath,
     [webEntry],
     root,
-    createWebEnvironment(stateWithoutWeb),
+    { ...createWebEnvironment(stateWithoutWeb), ...(options.merchantAnalysisDate ? { BALANCEFRAME_FIXTURE_MERCHANT_ANALYSIS_DATE: options.merchantAnalysisDate } : {}) },
   );
   const state: InternalScenarioProcesses = {
     ...stateWithoutWeb,

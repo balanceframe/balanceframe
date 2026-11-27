@@ -9,7 +9,7 @@
  * @balanceframe/actual-adapter.
  *
  * reviewAndApply mode is opt-in via runtimeConfig.reviewAndApply = true.
- * Observe mode (default) never writes to Actual.
+ * Observe rejects explicit adapter mutations; SDK synchronization can still upload or post schedules.
  *
  * The pure factory implementation lives in server/utils/mutation-executor.ts
  * so tests can import createDefaultExecutorFactory without triggering

@@ -161,3 +161,14 @@ export function composeScenarioResearch(event: H3Event, selectedSpaceId: string)
     },
   };
 }
+
+/** Only the owned scaled Review fixture pins the analysis window. Authorization uses live time. */
+export function composeScenarioMerchantOptions(event: H3Event, selectedSpaceId: string) {
+  const research = composeScenarioResearch(event, selectedSpaceId);
+  const options = research ? { research } : {};
+  const analysisDate = process.env.BALANCEFRAME_FIXTURE_MERCHANT_ANALYSIS_DATE;
+  if (!analysisDate || !/^\d{4}-\d{2}-\d{2}$/.test(analysisDate)) return options;
+  const context = getScenarioFixtureContext(event);
+  return context.active && context.valid && context.scenarioId === 'merchant-local-sparse' &&
+    context.spaceId === selectedSpaceId ? { ...options, analysisDate } : options;
+}
