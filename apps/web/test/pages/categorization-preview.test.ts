@@ -85,6 +85,45 @@ describe('synchronization-capable categorization preview', () => {
     expect(wrapper.text()).toContain(report.source.startedAt);
     expect(wrapper.text()).toContain('new');
   });
+  it('aborts an in-flight preview on same-user session rotation and keeps the new result', async () => {
+    const first = Promise.withResolvers<Response>();
+    const second = Promise.withResolvers<Response>();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    vi.stubGlobal('fetch', fetcher);
+    const wrapper = page();
+    await wrapper.get('button').trigger('click');
+    const signal = fetcher.mock.calls[0]?.[1]?.signal;
+    expect(signal?.aborted).toBe(false);
+
+    (auth.session as ReturnType<typeof ref>).value = {
+      data: { user: { id: 'human' }, session: { id: 'rotated-session' } },
+    };
+    await flushPromises();
+    expect(signal?.aborted).toBe(true);
+    await wrapper.get('button').trigger('click');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    second.resolve(
+      response({
+        ...report,
+        plan: { ...report.plan, proposedCategoryId: 'second-session-category' },
+      }),
+    );
+    await flushPromises();
+    expect(wrapper.text()).toContain('second-session-category');
+
+    first.resolve(
+      response({
+        ...report,
+        plan: { ...report.plan, proposedCategoryId: 'first-session-private-category' },
+      }),
+    );
+    await flushPromises();
+    expect(wrapper.text()).toContain('second-session-category');
+    expect(wrapper.text()).not.toContain('first-session-private-category');
+  });
   it.each(['close', 'new-proposal', 'sign-out'] as const)(
     'discards a delayed private response after %s',
     async (kind) => {
